@@ -10,6 +10,8 @@
     --ink:#121014; --panel:#1c1a20; --panel-2:#232028;
     --paper:#EDEAE4; --paper-dim:#9a958f; --red:#FF4B3E;
     --lavender:#8B85C1; --border:#332f38;
+    --radius:10px;
+    --bevel: inset 0 1px 0 rgba(255,255,255,0.06), inset 0 -1px 0 rgba(0,0,0,0.25);
   }
   *{box-sizing:border-box;}
   body{margin:0;background:var(--ink);color:var(--paper);font-family:'Inter',system-ui,sans-serif;min-height:100vh;}
@@ -21,21 +23,39 @@
   .row{display:flex;gap:8px;}
   input[type=text]{
     flex:1;padding:14px 16px;background:var(--panel);border:2px solid var(--border);
-    color:var(--paper);font-size:16px;font-family:'Inter',sans-serif;border-radius:2px;outline:none;
+    color:var(--paper);font-size:16px;font-family:'Inter',sans-serif;border-radius:var(--radius);outline:none;
+    box-shadow:var(--bevel);
   }
   input[type=text]:focus{border-color:var(--red);}
   button{
     padding:14px 18px;background:var(--red);color:var(--ink);border:none;
     font-family:'Bebas Neue',sans-serif;font-size:17px;letter-spacing:0.5px;
-    border-radius:2px;cursor:pointer;
+    border-radius:var(--radius);cursor:pointer;box-shadow:var(--bevel);
   }
   button:active{opacity:0.85;}
   button:disabled{background:var(--border);color:var(--paper-dim);}
   .settings{padding:0 20px 6px;}
+  .settings-panel{border-bottom:2px solid var(--border);}
+  .settings-panel-summary{
+    padding:14px 20px;font-size:14px;font-weight:500;color:var(--paper);
+    cursor:pointer;list-style:none;
+  }
+  .settings-panel-summary::-webkit-details-marker{display:none;}
+  .anilist-btn{
+    margin-top:8px;width:100%;padding:10px;background:var(--panel-2);color:var(--lavender);
+    border:1px solid var(--border);border-radius:var(--radius);font-family:'Inter',sans-serif;font-size:13px;
+    box-shadow:var(--bevel);
+  }
+  .clear-cache-row{padding:0 20px 14px;text-align:right;}
+  .clear-cache-btn{
+    background:none;border:none;color:var(--paper-dim);font-size:11.5px;
+    text-decoration:underline;padding:0;font-family:'Inter',sans-serif;
+  }
   .settings summary{color:var(--paper-dim);font-size:12.5px;cursor:pointer;}
-  .settings input{
+  .settings input, .settings textarea{
     width:100%;margin-top:8px;padding:10px 12px;background:var(--panel);
-    border:1px solid var(--border);color:var(--paper);font-size:14px;border-radius:2px;
+    border:1px solid var(--border);color:var(--paper);font-size:14px;border-radius:var(--radius);
+    font-family:'Inter',sans-serif;resize:vertical;box-shadow:var(--bevel);
   }
   .settings input:disabled{
     opacity:0.45;cursor:not-allowed;
@@ -62,16 +82,36 @@
   main{padding:8px 20px 60px;}
   .status{color:var(--paper-dim);font-size:13px;padding:20px 0;text-align:center;}
   .status.error{color:var(--red);}
+  .status button{
+    background:var(--panel-2);color:var(--paper);border:1px solid var(--border);
+    padding:10px 14px;border-radius:var(--radius);font-family:'Inter',sans-serif;font-size:13px;
+    margin:4px 6px 0 0;cursor:pointer;box-shadow:var(--bevel);
+  }
+  .status button.didyoumean-yes{border-color:var(--red);color:var(--red);}
   .summary{
     color:var(--lavender);font-size:13px;padding:14px 0 6px;
     border-bottom:1px solid var(--border);margin-bottom:10px;
   }
   .result{
-    background:var(--panel);border:1px solid var(--border);border-radius:2px;
-    padding:12px 14px;margin-bottom:8px;
+    background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+    padding:12px 14px;margin-bottom:8px;box-shadow:var(--bevel);
   }
   .result .domain{color:var(--paper);font-weight:600;font-size:14px;}
   .result a{color:var(--lavender);font-size:12px;word-break:break-all;text-decoration:none;}
+  .chapter-row{
+    display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap;
+  }
+  .chapter-check-btn{
+    background:var(--panel-2);color:var(--paper-dim);border:1px solid var(--border);
+    padding:6px 10px;border-radius:8px;font-family:'Inter',sans-serif;font-size:11.5px;
+    cursor:pointer;box-shadow:var(--bevel);
+  }
+  .chapter-check-btn:disabled{opacity:0.5;cursor:not-allowed;}
+  .chapter-result{font-size:11.5px;}
+  .recheck-btn{
+    background:none;border:none;color:var(--lavender);font-size:11px;
+    text-decoration:underline;cursor:pointer;padding:0;margin-left:4px;font-family:'Inter',sans-serif;
+  }
   .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;}
   .chip{
     background:var(--panel-2);border:1px solid var(--border);color:var(--lavender);
@@ -87,24 +127,38 @@
   <p class="sub">search one query, list every URL and domain in the results</p>
 </header>
 
-<div class="settings">
-  <details>
-    <summary>Tavily API key (saved on this device only)</summary>
-    <input type="text" id="apiKey" placeholder="Paste your Tavily API key">
-  </details>
-  <details style="margin-top:6px;">
-    <summary>Custom domain filter (optional — blank means search everywhere)</summary>
-    <input type="text" id="includeDomains" placeholder="e.g. comix.to, mangapark.io">
-  </details>
-</div>
+<details class="settings-panel">
+  <summary class="settings-panel-summary">⚙ Settings</summary>
 
-<div class="toggle-row">
-  <span>Search Manhwa Sources</span>
-  <label class="switch">
-    <input type="checkbox" id="manhwaToggle">
-    <span class="slider"></span>
-  </label>
-</div>
+  <div class="settings">
+    <details>
+      <summary>Tavily API key (saved on this device only)</summary>
+      <input type="text" id="apiKey" placeholder="Paste your Tavily API key">
+    </details>
+    <details style="margin-top:6px;">
+      <summary>Custom domain filter (optional — blank means search everywhere)</summary>
+      <input type="text" id="includeDomains" placeholder="e.g. comix.to, mangapark.io">
+    </details>
+    <details style="margin-top:6px;">
+      <summary>Title aliases (optional — one group per line, comma-separated)</summary>
+      <textarea id="aliasList" rows="4" placeholder="Albus Changes the World, Kaiten no Albus
+Solo Leveling, Only I Level Up"></textarea>
+      <button id="anilistLookup" type="button" class="anilist-btn">Look up aliases via AniList for current search box text</button>
+    </details>
+  </div>
+
+  <div class="toggle-row">
+    <span>Search Manhwa Sources</span>
+    <label class="switch">
+      <input type="checkbox" id="manhwaToggle">
+      <span class="slider"></span>
+    </label>
+  </div>
+
+  <div class="clear-cache-row">
+    <button id="clearCacheBtn" type="button" class="clear-cache-btn">Clear cached results</button>
+  </div>
+</details>
 
 <div class="search-wrap">
   <div class="row">
@@ -132,6 +186,7 @@
   const qInput = document.getElementById('q');
   const keyInput = document.getElementById('apiKey');
   const includeInput = document.getElementById('includeDomains');
+  const aliasInput = document.getElementById('aliasList');
   const manhwaToggle = document.getElementById('manhwaToggle');
   const goBtn = document.getElementById('go');
   const results = document.getElementById('results');
@@ -141,6 +196,79 @@
   keyInput.addEventListener('change', () => localStorage.setItem('tavily_key', keyInput.value.trim()));
   includeInput.value = localStorage.getItem('tavily_include_domains') || '';
   includeInput.addEventListener('change', () => localStorage.setItem('tavily_include_domains', includeInput.value.trim()));
+  aliasInput.value = localStorage.getItem('title_aliases') || '';
+  aliasInput.addEventListener('change', () => {
+    localStorage.setItem('title_aliases', aliasInput.value);
+    checkAliasLineWarnings();
+  });
+
+  function checkAliasLineWarnings() {
+    const existingWarn = document.getElementById('aliasWarning');
+    if (existingWarn) existingWarn.remove();
+
+    const lines = aliasInput.value.split('\n').map(l => l.trim()).filter(Boolean);
+    const singleEntryLines = lines.filter(l => !l.includes(','));
+    if (singleEntryLines.length === 0) return;
+
+    const warn = document.createElement('p');
+    warn.id = 'aliasWarning';
+    warn.style.cssText = 'color:var(--red);font-size:12px;margin:6px 0 0;';
+    warn.textContent = singleEntryLines.length === 1
+      ? `Note: "${singleEntryLines[0]}" has no comma, so it won't work as an alias group (needs 2+ names per line).`
+      : `Note: ${singleEntryLines.length} lines have no comma, so they won't work as alias groups (each needs 2+ names).`;
+    aliasInput.insertAdjacentElement('afterend', warn);
+  }
+  checkAliasLineWarnings();
+
+  const anilistBtn = document.getElementById('anilistLookup');
+  anilistBtn.addEventListener('click', lookupAniListAliases);
+
+  async function lookupAniListAliases() {
+    const title = qInput.value.trim();
+    if (!title) { results.innerHTML = '<p class="status error">Type a title in the search box first.</p>'; return; }
+
+    anilistBtn.disabled = true;
+    anilistBtn.textContent = 'Looking up…';
+
+    try {
+      const query = `
+        query ($search: String) {
+          Media(search: $search, type: MANGA) {
+            title { romaji english native }
+            synonyms
+          }
+        }`;
+      const resp = await fetch('https://graphql.anilist.co', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({ query, variables: { search: title } })
+      });
+      if (!resp.ok) throw new Error(`AniList error (${resp.status})`);
+      const data = await resp.json();
+      if (data.errors && data.errors.length) {
+        throw new Error(`AniList: ${data.errors.map(e => e.message).join('; ')}`);
+      }
+      const media = data.data && data.data.Media;
+      if (!media) { results.innerHTML = '<p class="status error">No AniList match found for that title. Try a slightly different spelling or the English/romaji title.</p>'; return; }
+
+      const names = new Set();
+      if (media.title.english) names.add(media.title.english.trim());
+      if (media.title.romaji) names.add(media.title.romaji.trim());
+      if (media.title.native) names.add(media.title.native.trim());
+      (media.synonyms || []).forEach(s => s && names.add(s.trim()));
+
+      const groupLine = [...names].join(', ');
+      const existing = aliasInput.value.trim();
+      aliasInput.value = existing ? `${existing}\n${groupLine}` : groupLine;
+      localStorage.setItem('title_aliases', aliasInput.value);
+      results.innerHTML = `<p class="status">Added alias group: ${escapeHtml(groupLine)}</p>`;
+    } catch (e) {
+      results.innerHTML = `<p class="status error">${escapeHtml(e.message)}</p>`;
+    } finally {
+      anilistBtn.disabled = false;
+      anilistBtn.textContent = 'Look up aliases via AniList for current search box text';
+    }
+  }
   manhwaToggle.checked = localStorage.getItem('manhwa_toggle') === 'true';
   manhwaToggle.addEventListener('change', () => {
     localStorage.setItem('manhwa_toggle', manhwaToggle.checked);
@@ -156,12 +284,30 @@
   syncIncludeFieldState();
 
   qInput.addEventListener('keydown', e => { if (e.key === 'Enter') runSearch(); });
-  goBtn.addEventListener('click', runSearch);
+  goBtn.addEventListener('click', () => runSearch());
+
+  const clearCacheBtn = document.getElementById('clearCacheBtn');
+  clearCacheBtn.addEventListener('click', () => {
+    const keys = Object.keys(localStorage).filter(k =>
+      k.startsWith('tavily_cache:') || k.startsWith('tavily_extract_cache:')
+    );
+    keys.forEach(k => localStorage.removeItem(k));
+    results.innerHTML = `<p class="status">Cleared ${keys.length} cached item${keys.length === 1 ? '' : 's'} (searches + chapter checks).</p>`;
+  });
 
   function escapeHtml(str) {
     const div = document.createElement('div');
     div.textContent = str ?? '';
     return div.innerHTML;
+  }
+
+  function safeHref(url) {
+    // Only allow http/https — blocks javascript:, data:, vbscript:, etc.
+    // from being clickable, even if a source ever returned one.
+    try {
+      const parsed = new URL(url);
+      return (parsed.protocol === 'http:' || parsed.protocol === 'https:') ? url : '#';
+    } catch { return '#'; }
   }
 
   function cleanDomain(url) {
@@ -182,14 +328,97 @@
     return domain || title;
   }
 
-  async function runSearch() {
-    const query = qInput.value.trim();
+  function levenshtein(a, b) {
+    const m = a.length, n = b.length;
+    const dp = Array.from({length: m + 1}, (_, i) => [i, ...Array(n).fill(0)]);
+    for (let j = 0; j <= n; j++) dp[0][j] = j;
+    for (let i = 1; i <= m; i++) {
+      for (let j = 1; j <= n; j++) {
+        dp[i][j] = a[i-1] === b[j-1]
+          ? dp[i-1][j-1]
+          : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
+      }
+    }
+    return dp[m][n];
+  }
+
+  function findClosestAliasName(query) {
+    const groups = aliasInput.value.split('\n')
+      .map(line => line.split(',').map(n => n.trim()).filter(Boolean))
+      .filter(g => g.length > 1);
+    const q = query.toLowerCase();
+    let best = null;
+    let bestDist = Infinity;
+    for (const group of groups) {
+      for (const name of group) {
+        const dist = levenshtein(q, name.toLowerCase());
+        // Skip fuzzy matching entirely for very short names — a 3-letter alias
+        // is too easy to false-match against unrelated short queries.
+        if (name.length < 5) continue;
+        // Allow roughly up to ~25% of the string length to differ, so short titles
+        // need near-exact spelling while long titles tolerate a couple typos.
+        const threshold = Math.min(4, Math.max(1, Math.floor(name.length * 0.25)));
+        if (dist > 0 && dist <= threshold && dist < bestDist) {
+          bestDist = dist;
+          best = { name, group };
+        }
+      }
+    }
+    return best;
+  }
+
+  function getAliasGroup(query) {
+    const groups = aliasInput.value.split('\n')
+      .map(line => line.split(',').map(n => n.trim()).filter(Boolean))
+      .filter(g => g.length > 1);
+    const q = query.toLowerCase();
+    for (const group of groups) {
+      if (group.some(name => name.toLowerCase() === q)) return group;
+    }
+    return [query];  // no exact alias match, just search the typed query alone
+  }
+
+  async function runSearch(forceQuery, skipSuggestion) {
+    const query = (forceQuery || qInput.value).trim();
     const apiKey = keyInput.value.trim();
     if (!apiKey) { results.innerHTML = '<p class="status error">Add your Tavily API key first.</p>'; return; }
     if (!query) return;
 
+    // If nothing matches exactly but something close does, ask before searching
+    // rather than silently searching the (possibly misspelled) raw text.
+    if (!skipSuggestion) {
+      const exactGroup = getAliasGroup(query);
+      if (exactGroup.length === 1) {
+        const suggestion = findClosestAliasName(query);
+        if (suggestion) {
+          results.innerHTML = `
+            <p class="status">
+              Did you mean <strong style="color:var(--paper)">${escapeHtml(suggestion.name)}</strong>?
+              <br><br>
+              <button type="button" class="didyoumean-yes">Yes, search that</button>
+              <button type="button" class="didyoumean-no">No, search "${escapeHtml(query)}" as typed</button>
+            </p>`;
+          results.querySelector('.didyoumean-yes').addEventListener('click', () => {
+            qInput.value = suggestion.name;
+            runSearch(suggestion.name, true);
+          });
+          results.querySelector('.didyoumean-no').addEventListener('click', () => runSearch(query, true));
+          return;
+        }
+      }
+    }
+
     goBtn.disabled = true;
-    results.innerHTML = '<p class="status">Searching…</p>';
+    const group = getAliasGroup(query);
+    // Combine alias group into ONE query using OR, instead of one Tavily call per alias.
+    // Note: Tavily is a neural/semantic search engine, not a classic keyword engine —
+    // "OR" isn't a documented, guaranteed operator here. It tends to work well in practice
+    // (semantic search naturally treats it as "match either phrase"), but if you notice an
+    // alias group's results only reflect one of the names, the fallback is splitting it back
+    // into separate searches per name.
+    const combinedQuery = group.length > 1
+      ? group.map(n => `"${n}"`).join(' OR ')
+      : query;
 
     try {
       const includeDomains = manhwaToggle.checked
@@ -198,27 +427,64 @@
             ? includeInput.value.split(',').map(d => d.trim()).filter(Boolean)
             : undefined);
 
-      const body = {
-        api_key: apiKey,
-        query: query,
-        search_depth: 'basic',   // cheapest: 1 credit per call
-        max_results: 20
-      };
-      if (includeDomains) body.include_domains = includeDomains;
-
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout
-
-      const resp = await fetch('https://api.tavily.com/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: controller.signal
+      // Cache key covers the actual query sent plus the domain filter in effect 
+      // same search under a different filter is a genuinely different request.
+      const cacheKey = 'tavily_cache:' + JSON.stringify({
+        q: combinedQuery,
+        d: includeDomains ? [...includeDomains].sort() : null
       });
-      clearTimeout(timeoutId);
-      if (!resp.ok) throw new Error(`API error (${resp.status})`);
-      const data = await resp.json();
-      const organic = data.results || [];   // Tavily's field is "results", not "organic"
+
+      let data;
+      let fromCache = false;
+      const cached = localStorage.getItem(cacheKey);
+      if (cached) {
+        data = JSON.parse(cached);
+        fromCache = true;
+        results.innerHTML = '<p class="status">Loading cached result…</p>';
+      } else {
+        results.innerHTML = group.length > 1
+          ? `<p class="status">Searching combined aliases…</p>`
+          : '<p class="status">Searching…</p>';
+
+        const body = {
+          api_key: apiKey,
+          query: combinedQuery,
+          search_depth: 'basic',   // cheapest: 1 credit per call, even with a combined OR query
+          max_results: 20,
+          include_usage: true      // ask Tavily to report real credit cost for this call
+        };
+        if (includeDomains) body.include_domains = includeDomains;
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 20000);
+        const resp = await fetch('https://api.tavily.com/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        if (!resp.ok) throw new Error(`API error (${resp.status})`);
+        data = await resp.json();
+
+        // Cache the raw response so an identical future search costs 0 credits.
+        try { localStorage.setItem(cacheKey, JSON.stringify(data)); }
+        catch { /* localStorage full — not worth failing the search over */ }
+      }
+
+      let organic = data.results || [];
+
+      // Tavily's include_domains matches at the domain level, which lets subdomains
+      // through too (e.g. listing "mangadex.org" also allows "forum.mangadex.org").
+      // Tighten to an exact hostname match against whatever filter is active, so a
+      // forum/blog/wiki subdomain doesn't sneak in as if it were a hosting source.
+      if (includeDomains) {
+        const allowed = new Set(includeDomains.map(d => d.toLowerCase()));
+        organic = organic.filter(r => {
+          const d = cleanDomain(r.url);
+          return d && allowed.has(d);
+        });
+      }
 
       if (!organic.length) {
         results.innerHTML = '<p class="status">No results found.</p>';
@@ -226,28 +492,114 @@
       }
 
       const names = new Map();  // siteName -> domain (for chip fallback display)
-      const rows = organic.map(r => {
+      const rows = [];
+      for (const r of organic) {
         const domain = cleanDomain(r.url);
         const siteName = guessSiteName(r.title, domain);
+        if (names.has(siteName)) continue;
         names.set(siteName, domain);
         const safeName = escapeHtml(siteName);
-        const safeUrl = escapeHtml(r.url || '');
-        return `<div class="result"><div class="domain">${safeName}</div><a href="${safeUrl}" target="_blank" rel="noopener">${safeUrl}</a></div>`;
-      }).join('');
+        const rawUrl = r.url || '';
+        const safeUrl = escapeHtml(safeHref(rawUrl));
+        const displayUrl = escapeHtml(rawUrl);
+        rows.push(`<div class="result">
+          <div class="domain">${safeName}</div>
+          <a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${displayUrl}</a>
+          <div class="chapter-row">
+            <button type="button" class="chapter-check-btn" data-url="${escapeHtml(rawUrl)}">Check chapter count</button>
+            <span class="chapter-result"></span>
+          </div>
+        </div>`);
+      }
 
       const chips = [...names.entries()].sort((a,b) => a[0].localeCompare(b[0]))
         .map(([name, domain]) => `<span class="chip">${escapeHtml(name)}${domain ? ` <span class="chip-domain">(${escapeHtml(domain)})</span>` : ''}</span>`).join('');
 
+      // Real credit cost from Tavily, when available. Per Tavily's own docs, this
+      // can show 0 early in an account's life even when a credit was genuinely
+      // spent — it's not a bug in this tool if that happens occasionally.
+      const creditCost = data.usage && typeof data.usage.credits === 'number'
+        ? `${data.usage.credits} credit${data.usage.credits === 1 ? '' : 's'} used`
+        : null;
+
+      const costLabel = fromCache
+        ? 'from cache — 0 credits used'
+        : (creditCost || 'credit usage not reported');
+
+      const aliasNote = group.length > 1
+        ? `<p class="summary">Searched as: ${group.map(escapeHtml).join(' OR ')} — ${costLabel} — ${names.size} unique sites</p>`
+        : `<p class="summary">${organic.length} results — ${costLabel} — ${names.size} unique sites</p>`;
+
       results.innerHTML = `
-        <p class="summary">${organic.length} results — ${names.size} unique sites</p>
-        ${rows}
+        ${aliasNote}
+        ${rows.join('')}
         <div class="chips">${chips}</div>
       `;
+
+      // Wire up each "Check chapter count" button now that the cards exist in the DOM.
+      results.querySelectorAll('.chapter-check-btn').forEach(btn => {
+        btn.addEventListener('click', () => checkChapterCount(btn.dataset.url, btn));
+      });
     } catch (e) {
       const msg = e.name === 'AbortError' ? 'Request timed out — try again.' : e.message;
       results.innerHTML = `<p class="status error">${escapeHtml(msg)}</p>`;
     } finally {
       goBtn.disabled = false;
+    }
+  }
+
+  async function checkChapterCount(url, btn, forceRefresh) {
+    const apiKey = keyInput.value.trim();
+    if (!apiKey) return;
+    const label = btn.nextElementSibling;
+
+    btn.disabled = true;
+    btn.textContent = 'Checking…';
+
+    try {
+      const cacheKey = 'tavily_extract_cache:' + url;
+      let content;
+      let fromCache = false;
+      let creditNote = '';
+      const cached = !forceRefresh && localStorage.getItem(cacheKey);
+      if (cached) {
+        content = cached;
+        fromCache = true;
+      } else {
+        const resp = await fetch('https://api.tavily.com/extract', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ api_key: apiKey, urls: [url], extract_depth: 'basic', include_usage: true })
+        });
+        if (!resp.ok) throw new Error(`Extract error (${resp.status})`);
+        const data = await resp.json();
+        const result = (data.results || [])[0];
+        if (!result || !result.raw_content) throw new Error('No content extracted');
+        content = result.raw_content;
+        creditNote = data.usage && typeof data.usage.credits === 'number'
+          ? ` — ${data.usage.credits} credit${data.usage.credits === 1 ? '' : 's'}`
+          : '';
+        try { localStorage.setItem(cacheKey, content); } catch { /* storage full, skip caching */ }
+      }
+
+      // Best-effort pattern match — looks for "Chapter 123", "Ch. 45", "Ch 45.5", etc.
+      // and takes the highest number found. Accuracy depends entirely on how that
+      // specific site formats its chapter list in plain text.
+      const matches = [...content.matchAll(/\bch(?:apter)?\.?\s*(\d+(?:\.\d+)?)\b/gi)];
+      const resultText = !matches.length
+        ? 'No chapter numbers detected'
+        : `Highest found: Ch. ${Math.max(...matches.map(m => parseFloat(m[1])))}`;
+      const sourceTag = fromCache ? ' (cached — tap Recheck for latest)' : creditNote;
+
+      label.innerHTML = `${escapeHtml(resultText)}${escapeHtml(sourceTag)} <button type="button" class="recheck-btn">Recheck</button>`;
+      label.style.color = matches.length ? 'var(--lavender)' : 'var(--paper-dim)';
+      label.querySelector('.recheck-btn').addEventListener('click', () => checkChapterCount(url, btn, true));
+    } catch (e) {
+      label.textContent = `Couldn't check: ${e.message}`;
+      label.style.color = 'var(--red)';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Check chapter count';
     }
   }
 </script>
