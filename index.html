@@ -136,7 +136,7 @@
   </div>
 
   <div class="toggle-row">
-    <span>Auto-detect aliases (AniList + MyAnimeList)</span>
+    <span>Auto-detect aliases (MangaUpdates + AniList + MyAnimeList)</span>
     <label class="switch">
       <input type="checkbox" id="aniListAutoToggle">
       <span class="slider"></span>
@@ -207,10 +207,46 @@
 
   // Fetches AniList's known alternate titles for a search term.
   // Costs zero Tavily credits since AniList's API is free and separate.
-  // Returns { names, status } where status is one of:
+  // Returns { names, status, detail } where status is one of:
   //   'matched': AniList found the title, names may include a correction
   //   'no_match': AniList has no entry for this search text at all
-  //   'error': the AniList request itself failed (network/API issue)
+  // Primary source: MangaUpdates. Tried first, since it's a large, dedicated
+  // manga/manhwa/manhua database (unlike AniList/MAL, which lean anime-first).
+  // Its search endpoint doesn't require an auth token for read access. Note:
+  // its CORS support and exact response shape weren't independently verified
+  // before wiring this in, so treat this as a real-world test. If it fails
+  // consistently, the chain still falls through to AniList and Jikan below.
+  async function fetchMangaUpdatesAliases(title) {
+    try {
+      const resp = await fetch('https://api.mangaupdates.com/v1/series/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ search: title, page: 1, perpage: 1 })
+      });
+      if (!resp.ok) {
+        const detail = resp.status === 429 ? 'rate limited' : `HTTP ${resp.status}`;
+        return { names: [title], status: 'error', detail };
+      }
+      const data = await resp.json();
+      const result = (data.results || [])[0];
+      const record = result && result.record;
+      if (!record) return { names: [title], status: 'no_match' };
+
+      const names = new Set();
+      if (record.title) names.add(record.title.trim());
+      const firstAssociated = (record.associated || [])[0];
+      if (firstAssociated && firstAssociated.title) names.add(firstAssociated.title.trim());
+      if (!names.size) names.add(title);
+      return { names: [...names], status: 'matched' };
+    } catch {
+      return { names: [title], status: 'error', detail: 'network error' };
+    }
+  }
+
+  //   'error': the AniList request itself failed (network/API issue).
+  //     detail carries the actual HTTP status or error message, so a
+  //     rate limit (429) can be told apart from an outage or a plain
+  //     network failure instead of showing one generic "failed" message.
   async function fetchAniListAliases(title) {
     try {
       const query = `
@@ -225,7 +261,10 @@
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
         body: JSON.stringify({ query, variables: { search: title } })
       });
-      if (!resp.ok) return { names: [title], status: 'error' };
+      if (!resp.ok) {
+        const detail = resp.status === 429 ? 'rate limited' : `HTTP ${resp.status}`;
+        return { names: [title], status: 'error', detail };
+      }
       const data = await resp.json();
       const media = data.data && data.data.Media;
       if (!media) return { names: [title], status: 'no_match' };
@@ -239,8 +278,8 @@
       if (media.title.romaji) names.add(media.title.romaji.trim());
       if (!names.size) names.add(title);
       return { names: [...names], status: 'matched' };
-    } catch {
-      return { names: [title], status: 'error' };  // network hiccup
+    } catch (e) {
+      return { names: [title], status: 'error', detail: 'network error' };
     }
   }
 
@@ -249,7 +288,10 @@
   async function fetchJikanAliases(title) {
     try {
       const resp = await fetch(`https://api.jikan.moe/v4/manga?q=${encodeURIComponent(title)}&limit=1`);
-      if (!resp.ok) return { names: [title], status: 'error' };
+      if (!resp.ok) {
+        const detail = resp.status === 429 ? 'rate limited' : `HTTP ${resp.status}`;
+        return { names: [title], status: 'error', detail };
+      }
       const data = await resp.json();
       const entry = (data.data || [])[0];
       if (!entry) return { names: [title], status: 'no_match' };
@@ -260,26 +302,39 @@
       if (!names.size) names.add(title);
       return { names: [...names], status: 'matched' };
     } catch {
-      return { names: [title], status: 'error' };
+      return { names: [title], status: 'error', detail: 'network error' };
     }
   }
 
   // Tries AniList first. If it errors or has no entry, tries Jikan (MAL) next
   // before giving up and just searching the raw typed text. This way a
   // temporary outage or rate limit on one service doesn't block the feature.
+  // Tries MangaUpdates first, then AniList, then Jikan (MAL). Stops at the
+  // first one that finds a match. Only gives up and searches the raw typed
+  // text if all three fail or have no entry, so a single outage (like
+  // MyAnimeList's earlier today) doesn't block the feature entirely.
   async function fetchAliasesWithFallback(title) {
-    const primary = await fetchAniListAliases(title);
-    if (primary.status === 'matched') return { ...primary, source: 'AniList' };
+    const attempts = [
+      { fn: fetchMangaUpdatesAliases, source: 'MangaUpdates' },
+      { fn: fetchAniListAliases, source: 'AniList' },
+      { fn: fetchJikanAliases, source: 'MyAnimeList' }
+    ];
 
-    const fallback = await fetchJikanAliases(title);
-    if (fallback.status === 'matched') return { ...fallback, source: 'MyAnimeList' };
+    const results = [];
+    for (const { fn, source } of attempts) {
+      const result = await fn(title);
+      if (result.status === 'matched') return { ...result, source };
+      results.push({ source, ...result });
+    }
 
-    // Neither source matched. If either one gave a definite "not found"
-    // (rather than an outright request failure), report that as the
-    // clearer, more honest outcome instead of a generic error.
-    const finalStatus = (primary.status === 'no_match' || fallback.status === 'no_match')
-      ? 'no_match' : 'error';
-    return { names: [title], status: finalStatus, source: null };
+    // Nothing matched. If any source gave a definite "not found" (rather
+    // than an outright request failure), report that as the clearer,
+    // more honest outcome instead of a generic error.
+    const finalStatus = results.some(r => r.status === 'no_match') ? 'no_match' : 'error';
+    const detail = finalStatus === 'error'
+      ? results.map(r => `${r.source}: ${r.detail || 'unknown'}`).join(', ')
+      : null;
+    return { names: [title], status: finalStatus, source: null, detail };
   }
   manhwaToggle.checked = localStorage.getItem('manhwa_toggle') === 'true';
   manhwaToggle.addEventListener('change', () => {
@@ -360,12 +415,14 @@
     let group = [query];
     let lookupStatus = null;  // null = toggle was off, didn't check at all
     let lookupSource = null;  // which service actually matched, if any
+    let lookupDetail = null;  // real failure reason, when status is 'error'
     if (aniListAutoToggle.checked) {
-      results.innerHTML = '<p class="status">Checking AniList for alternate titles…</p>';
+      results.innerHTML = '<p class="status">Checking for alternate titles…</p>';
       const lookup = await fetchAliasesWithFallback(query);
       group = lookup.names;
       lookupStatus = lookup.status;
       lookupSource = lookup.source;
+      lookupDetail = lookup.detail;
     }
 
     // Combine alias group into ONE query using OR, instead of one Tavily call per alias.
@@ -493,9 +550,9 @@
 
       const wasCorrected = group.length === 1 && group[0].toLowerCase() !== query.toLowerCase();
       const lookupTag = lookupStatus === 'no_match'
-        ? ' (no match on AniList or MyAnimeList, searched as typed)'
+        ? ' (no match on MangaUpdates, AniList, or MyAnimeList, searched as typed)'
         : lookupStatus === 'error'
-          ? ' (alias lookup failed, searched as typed)'
+          ? ` (alias lookup failed: ${lookupDetail || 'unknown reason'}, searched as typed)`
           : '';
       const aliasNote = group.length > 1
         ? `<p class="summary">Searched as: ${group.map(escapeHtml).join(' OR ')}, ${costLabel}, ${names.size} unique sites</p>`
