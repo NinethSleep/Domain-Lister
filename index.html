@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Domain Lister</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600&display=swap');
+  :root{
+    --ink:#121014; --panel:#1c1a20; --panel-2:#232028;
+    --paper:#EDEAE4; --paper-dim:#9a958f; --red:#FF4B3E;
+    --lavender:#8B85C1; --border:#332f38;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--ink);color:var(--paper);font-family:'Inter',system-ui,sans-serif;min-height:100vh;}
+  header{padding:28px 20px 14px;border-bottom:2px solid var(--border);}
+  h1{font-family:'Bebas Neue',sans-serif;font-size:34px;letter-spacing:1px;margin:0 0 4px;}
+  h1 span{color:var(--red);}
+  .sub{color:var(--paper-dim);font-size:13px;margin:0;}
+  .search-wrap{padding:18px 20px 8px;}
+  .row{display:flex;gap:8px;}
+  input[type=text]{
+    flex:1;padding:14px 16px;background:var(--panel);border:2px solid var(--border);
+    color:var(--paper);font-size:16px;font-family:'Inter',sans-serif;border-radius:2px;outline:none;
+  }
+  input[type=text]:focus{border-color:var(--red);}
+  button{
+    padding:14px 18px;background:var(--red);color:var(--ink);border:none;
+    font-family:'Bebas Neue',sans-serif;font-size:17px;letter-spacing:0.5px;
+    border-radius:2px;cursor:pointer;
+  }
+  button:active{opacity:0.85;}
+  button:disabled{background:var(--border);color:var(--paper-dim);}
+  .settings{padding:0 20px 6px;}
+  .settings summary{color:var(--paper-dim);font-size:12.5px;cursor:pointer;}
+  .settings input{
+    width:100%;margin-top:8px;padding:10px 12px;background:var(--panel);
+    border:1px solid var(--border);color:var(--paper);font-size:14px;border-radius:2px;
+  }
+  .settings input:disabled{
+    opacity:0.45;cursor:not-allowed;
+  }
+  .toggle-row{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:10px 20px;
+  }
+  .toggle-row span{font-size:13.5px;color:var(--paper);font-weight:500;}
+  .switch{
+    position:relative;width:46px;height:26px;flex-shrink:0;
+  }
+  .switch input{opacity:0;width:0;height:0;}
+  .slider{
+    position:absolute;cursor:pointer;inset:0;
+    background:var(--border);transition:0.2s;border-radius:26px;
+  }
+  .slider::before{
+    content:"";position:absolute;height:20px;width:20px;left:3px;bottom:3px;
+    background:var(--paper);transition:0.2s;border-radius:50%;
+  }
+  .switch input:checked + .slider{background:var(--red);}
+  .switch input:checked + .slider::before{transform:translateX(20px);}
+  main{padding:8px 20px 60px;}
+  .status{color:var(--paper-dim);font-size:13px;padding:20px 0;text-align:center;}
+  .status.error{color:var(--red);}
+  .summary{
+    color:var(--lavender);font-size:13px;padding:14px 0 6px;
+    border-bottom:1px solid var(--border);margin-bottom:10px;
+  }
+  .result{
+    background:var(--panel);border:1px solid var(--border);border-radius:2px;
+    padding:12px 14px;margin-bottom:8px;
+  }
+  .result .domain{color:var(--paper);font-weight:600;font-size:14px;}
+  .result a{color:var(--lavender);font-size:12px;word-break:break-all;text-decoration:none;}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px;}
+  .chip{
+    background:var(--panel-2);border:1px solid var(--border);color:var(--lavender);
+    font-size:12.5px;padding:6px 10px;border-radius:20px;
+  }
+  .chip-domain{color:var(--paper-dim);font-size:11px;}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Domain<span>Lister</span></h1>
+  <p class="sub">search one query, list every URL and domain in the results</p>
+</header>
+
+<div class="settings">
+  <details>
+    <summary>Tavily API key (saved on this device only)</summary>
+    <input type="text" id="apiKey" placeholder="Paste your Tavily API key">
+  </details>
+  <details style="margin-top:6px;">
+    <summary>Custom domain filter (optional — blank means search everywhere)</summary>
+    <input type="text" id="includeDomains" placeholder="e.g. comix.to, mangapark.io">
+  </details>
+</div>
+
+<div class="toggle-row">
+  <span>Search Manhwa Sources</span>
+  <label class="switch">
+    <input type="checkbox" id="manhwaToggle">
+    <span class="slider"></span>
+  </label>
+</div>
+
+<div class="search-wrap">
+  <div class="row">
+    <input type="text" id="q" placeholder="Search query..." autocomplete="off">
+    <button id="go">Search</button>
+  </div>
+</div>
+
+<main id="results">
+  <p class="status">Enter your API key above, then search.</p>
+</main>
+
+<script>
+  // User-verified list of manhwa/manga hosting domains
+  const MANHWA_SOURCES = [
+    "kissmanga.in", "ksgroupscans.com", "kunmanga.co.uk", "kuramanga.com", "linkmanga.com",
+    "mangaball.net", "manga.uno", "mangabats.com", "mangadex.org", "mangadot.net", "mangafire.to",
+    "culturedworks.com", "reader.decadencescans.com", "galaxymanga.io", "globalcomix.com",
+    "infinityscans.net", "isekaiscans.org", "kagane.to", "kingofshojo.com", "mangafox.fun",
+    "mangafreak.me", "mangagg.com", "mangahub.io", "mangak.io", "mangakakalot.gg",
+    "mangakakalot.fun", "1manga.co", "anisascans.in", "arenascan.com", "artlapsa.com",
+    "bbato.com", "bookwalker.jp", "asurascans.com", "comicfury.com", "comix.to", "flamecomics.xyz"
+  ];
+
+  const qInput = document.getElementById('q');
+  const keyInput = document.getElementById('apiKey');
+  const includeInput = document.getElementById('includeDomains');
+  const manhwaToggle = document.getElementById('manhwaToggle');
+  const goBtn = document.getElementById('go');
+  const results = document.getElementById('results');
+
+  // Persist the key and custom domain list in this browser only.
+  keyInput.value = localStorage.getItem('tavily_key') || '';
+  keyInput.addEventListener('change', () => localStorage.setItem('tavily_key', keyInput.value.trim()));
+  includeInput.value = localStorage.getItem('tavily_include_domains') || '';
+  includeInput.addEventListener('change', () => localStorage.setItem('tavily_include_domains', includeInput.value.trim()));
+  manhwaToggle.checked = localStorage.getItem('manhwa_toggle') === 'true';
+  manhwaToggle.addEventListener('change', () => {
+    localStorage.setItem('manhwa_toggle', manhwaToggle.checked);
+    syncIncludeFieldState();
+  });
+
+  function syncIncludeFieldState() {
+    includeInput.disabled = manhwaToggle.checked;
+    includeInput.placeholder = manhwaToggle.checked
+      ? 'Disabled — using Manhwa Sources list'
+      : 'e.g. comix.to, mangapark.io';
+  }
+  syncIncludeFieldState();
+
+  qInput.addEventListener('keydown', e => { if (e.key === 'Enter') runSearch(); });
+  goBtn.addEventListener('click', runSearch);
+
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str ?? '';
+    return div.innerHTML;
+  }
+
+  function cleanDomain(url) {
+    try {
+      const host = new URL(url).hostname.toLowerCase();
+      return host.startsWith('www.') ? host.slice(4) : host;
+    } catch { return null; }
+  }
+
+  function guessSiteName(title, domain) {
+    if (!title) return domain || '?';
+    // Site names usually trail the title after a separator: "Chapter 92 - Comix" → "Comix"
+    const parts = title.split(/\s[-|–—]\s/);
+    if (parts.length > 1) {
+      const candidate = parts[parts.length - 1].trim();
+      if (candidate.length > 1 && candidate.length < 40) return candidate;
+    }
+    return domain || title;
+  }
+
+  async function runSearch() {
+    const query = qInput.value.trim();
+    const apiKey = keyInput.value.trim();
+    if (!apiKey) { results.innerHTML = '<p class="status error">Add your Tavily API key first.</p>'; return; }
+    if (!query) return;
+
+    goBtn.disabled = true;
+    results.innerHTML = '<p class="status">Searching…</p>';
+
+    try {
+      const includeDomains = manhwaToggle.checked
+        ? MANHWA_SOURCES
+        : (includeInput.value.trim()
+            ? includeInput.value.split(',').map(d => d.trim()).filter(Boolean)
+            : undefined);
+
+      const body = {
+        api_key: apiKey,
+        query: query,
+        search_depth: 'basic',   // cheapest: 1 credit per call
+        max_results: 20
+      };
+      if (includeDomains) body.include_domains = includeDomains;
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout
+
+      const resp = await fetch('https://api.tavily.com/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+      if (!resp.ok) throw new Error(`API error (${resp.status})`);
+      const data = await resp.json();
+      const organic = data.results || [];   // Tavily's field is "results", not "organic"
+
+      if (!organic.length) {
+        results.innerHTML = '<p class="status">No results found.</p>';
+        return;
+      }
+
+      const names = new Map();  // siteName -> domain (for chip fallback display)
+      const rows = organic.map(r => {
+        const domain = cleanDomain(r.url);
+        const siteName = guessSiteName(r.title, domain);
+        names.set(siteName, domain);
+        const safeName = escapeHtml(siteName);
+        const safeUrl = escapeHtml(r.url || '');
+        return `<div class="result"><div class="domain">${safeName}</div><a href="${safeUrl}" target="_blank" rel="noopener">${safeUrl}</a></div>`;
+      }).join('');
+
+      const chips = [...names.entries()].sort((a,b) => a[0].localeCompare(b[0]))
+        .map(([name, domain]) => `<span class="chip">${escapeHtml(name)}${domain ? ` <span class="chip-domain">(${escapeHtml(domain)})</span>` : ''}</span>`).join('');
+
+      results.innerHTML = `
+        <p class="summary">${organic.length} results — ${names.size} unique sites</p>
+        ${rows}
+        <div class="chips">${chips}</div>
+      `;
+    } catch (e) {
+      const msg = e.name === 'AbortError' ? 'Request timed out — try again.' : e.message;
+      results.innerHTML = `<p class="status error">${escapeHtml(msg)}</p>`;
+    } finally {
+      goBtn.disabled = false;
+    }
+  }
+</script>
+
+</body>
+</html>
