@@ -82,12 +82,6 @@
   main{padding:8px 20px 60px;}
   .status{color:var(--paper-dim);font-size:13px;padding:20px 0;text-align:center;}
   .status.error{color:var(--red);}
-  .status button{
-    background:var(--panel-2);color:var(--paper);border:1px solid var(--border);
-    padding:10px 14px;border-radius:var(--radius);font-family:'Inter',sans-serif;font-size:13px;
-    margin:4px 6px 0 0;cursor:pointer;box-shadow:var(--bevel);
-  }
-  .status button.didyoumean-yes{border-color:var(--red);color:var(--red);}
   .summary{
     color:var(--lavender);font-size:13px;padding:14px 0 6px;
     border-bottom:1px solid var(--border);margin-bottom:10px;
@@ -139,12 +133,14 @@
       <summary>Custom domain filter (optional — blank means search everywhere)</summary>
       <input type="text" id="includeDomains" placeholder="e.g. comix.to, mangapark.io">
     </details>
-    <details style="margin-top:6px;">
-      <summary>Title aliases (optional — one group per line, comma-separated)</summary>
-      <textarea id="aliasList" rows="4" placeholder="Albus Changes the World, Kaiten no Albus
-Solo Leveling, Only I Level Up"></textarea>
-      <button id="anilistLookup" type="button" class="anilist-btn">Look up aliases via AniList for current search box text</button>
-    </details>
+  </div>
+
+  <div class="toggle-row">
+    <span>Auto-detect aliases via AniList</span>
+    <label class="switch">
+      <input type="checkbox" id="aniListAutoToggle">
+      <span class="slider"></span>
+    </label>
   </div>
 
   <div class="toggle-row">
@@ -186,7 +182,7 @@ Solo Leveling, Only I Level Up"></textarea>
   const qInput = document.getElementById('q');
   const keyInput = document.getElementById('apiKey');
   const includeInput = document.getElementById('includeDomains');
-  const aliasInput = document.getElementById('aliasList');
+  const aniListAutoToggle = document.getElementById('aniListAutoToggle');
   const manhwaToggle = document.getElementById('manhwaToggle');
   const goBtn = document.getElementById('go');
   const results = document.getElementById('results');
@@ -196,40 +192,14 @@ Solo Leveling, Only I Level Up"></textarea>
   keyInput.addEventListener('change', () => localStorage.setItem('tavily_key', keyInput.value.trim()));
   includeInput.value = localStorage.getItem('tavily_include_domains') || '';
   includeInput.addEventListener('change', () => localStorage.setItem('tavily_include_domains', includeInput.value.trim()));
-  aliasInput.value = localStorage.getItem('title_aliases') || '';
-  aliasInput.addEventListener('change', () => {
-    localStorage.setItem('title_aliases', aliasInput.value);
-    checkAliasLineWarnings();
-  });
+  aniListAutoToggle.checked = localStorage.getItem('anilist_auto') !== 'false';  // on by default
+  aniListAutoToggle.addEventListener('change', () => localStorage.setItem('anilist_auto', aniListAutoToggle.checked));
 
-  function checkAliasLineWarnings() {
-    const existingWarn = document.getElementById('aliasWarning');
-    if (existingWarn) existingWarn.remove();
-
-    const lines = aliasInput.value.split('\n').map(l => l.trim()).filter(Boolean);
-    const singleEntryLines = lines.filter(l => !l.includes(','));
-    if (singleEntryLines.length === 0) return;
-
-    const warn = document.createElement('p');
-    warn.id = 'aliasWarning';
-    warn.style.cssText = 'color:var(--red);font-size:12px;margin:6px 0 0;';
-    warn.textContent = singleEntryLines.length === 1
-      ? `Note: "${singleEntryLines[0]}" has no comma, so it won't work as an alias group (needs 2+ names per line).`
-      : `Note: ${singleEntryLines.length} lines have no comma, so they won't work as alias groups (each needs 2+ names).`;
-    aliasInput.insertAdjacentElement('afterend', warn);
-  }
-  checkAliasLineWarnings();
-
-  const anilistBtn = document.getElementById('anilistLookup');
-  anilistBtn.addEventListener('click', lookupAniListAliases);
-
-  async function lookupAniListAliases() {
-    const title = qInput.value.trim();
-    if (!title) { results.innerHTML = '<p class="status error">Type a title in the search box first.</p>'; return; }
-
-    anilistBtn.disabled = true;
-    anilistBtn.textContent = 'Looking up…';
-
+  // Fetches AniList's known alternate titles for a search term, silently.
+  // Costs zero Tavily credits — AniList's API is free and separate.
+  // Returns just the title, alone, if lookup fails or nothing matches — the
+  // search still runs normally, it just won't benefit from alias expansion.
+  async function fetchAniListAliases(title) {
     try {
       const query = `
         query ($search: String) {
@@ -243,30 +213,22 @@ Solo Leveling, Only I Level Up"></textarea>
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
         body: JSON.stringify({ query, variables: { search: title } })
       });
-      if (!resp.ok) throw new Error(`AniList error (${resp.status})`);
+      if (!resp.ok) return [title];
       const data = await resp.json();
-      if (data.errors && data.errors.length) {
-        throw new Error(`AniList: ${data.errors.map(e => e.message).join('; ')}`);
-      }
       const media = data.data && data.data.Media;
-      if (!media) { results.innerHTML = '<p class="status error">No AniList match found for that title. Try a slightly different spelling or the English/romaji title.</p>'; return; }
+      if (!media) return [title];
 
+      // Keep this tight — only the clean English and romaji titles. Native
+      // Japanese script and the full synonyms list get skipped: jamming every
+      // known alias into one OR query overloads the search and drags in
+      // generic catalog/search-listing pages instead of the actual title.
       const names = new Set();
       if (media.title.english) names.add(media.title.english.trim());
       if (media.title.romaji) names.add(media.title.romaji.trim());
-      if (media.title.native) names.add(media.title.native.trim());
-      (media.synonyms || []).forEach(s => s && names.add(s.trim()));
-
-      const groupLine = [...names].join(', ');
-      const existing = aliasInput.value.trim();
-      aliasInput.value = existing ? `${existing}\n${groupLine}` : groupLine;
-      localStorage.setItem('title_aliases', aliasInput.value);
-      results.innerHTML = `<p class="status">Added alias group: ${escapeHtml(groupLine)}</p>`;
-    } catch (e) {
-      results.innerHTML = `<p class="status error">${escapeHtml(e.message)}</p>`;
-    } finally {
-      anilistBtn.disabled = false;
-      anilistBtn.textContent = 'Look up aliases via AniList for current search box text';
+      if (!names.size) names.add(title);
+      return [...names];
+    } catch {
+      return [title];  // network hiccup — fall back to searching just the typed title
     }
   }
   manhwaToggle.checked = localStorage.getItem('manhwa_toggle') === 'true';
@@ -328,88 +290,20 @@ Solo Leveling, Only I Level Up"></textarea>
     return domain || title;
   }
 
-  function levenshtein(a, b) {
-    const m = a.length, n = b.length;
-    const dp = Array.from({length: m + 1}, (_, i) => [i, ...Array(n).fill(0)]);
-    for (let j = 0; j <= n; j++) dp[0][j] = j;
-    for (let i = 1; i <= m; i++) {
-      for (let j = 1; j <= n; j++) {
-        dp[i][j] = a[i-1] === b[j-1]
-          ? dp[i-1][j-1]
-          : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
-      }
-    }
-    return dp[m][n];
-  }
-
-  function findClosestAliasName(query) {
-    const groups = aliasInput.value.split('\n')
-      .map(line => line.split(',').map(n => n.trim()).filter(Boolean))
-      .filter(g => g.length > 1);
-    const q = query.toLowerCase();
-    let best = null;
-    let bestDist = Infinity;
-    for (const group of groups) {
-      for (const name of group) {
-        const dist = levenshtein(q, name.toLowerCase());
-        // Skip fuzzy matching entirely for very short names — a 3-letter alias
-        // is too easy to false-match against unrelated short queries.
-        if (name.length < 5) continue;
-        // Allow roughly up to ~25% of the string length to differ, so short titles
-        // need near-exact spelling while long titles tolerate a couple typos.
-        const threshold = Math.min(4, Math.max(1, Math.floor(name.length * 0.25)));
-        if (dist > 0 && dist <= threshold && dist < bestDist) {
-          bestDist = dist;
-          best = { name, group };
-        }
-      }
-    }
-    return best;
-  }
-
-  function getAliasGroup(query) {
-    const groups = aliasInput.value.split('\n')
-      .map(line => line.split(',').map(n => n.trim()).filter(Boolean))
-      .filter(g => g.length > 1);
-    const q = query.toLowerCase();
-    for (const group of groups) {
-      if (group.some(name => name.toLowerCase() === q)) return group;
-    }
-    return [query];  // no exact alias match, just search the typed query alone
-  }
-
-  async function runSearch(forceQuery, skipSuggestion) {
+  async function runSearch(forceQuery) {
     const query = (forceQuery || qInput.value).trim();
     const apiKey = keyInput.value.trim();
     if (!apiKey) { results.innerHTML = '<p class="status error">Add your Tavily API key first.</p>'; return; }
     if (!query) return;
 
-    // If nothing matches exactly but something close does, ask before searching
-    // rather than silently searching the (possibly misspelled) raw text.
-    if (!skipSuggestion) {
-      const exactGroup = getAliasGroup(query);
-      if (exactGroup.length === 1) {
-        const suggestion = findClosestAliasName(query);
-        if (suggestion) {
-          results.innerHTML = `
-            <p class="status">
-              Did you mean <strong style="color:var(--paper)">${escapeHtml(suggestion.name)}</strong>?
-              <br><br>
-              <button type="button" class="didyoumean-yes">Yes, search that</button>
-              <button type="button" class="didyoumean-no">No, search "${escapeHtml(query)}" as typed</button>
-            </p>`;
-          results.querySelector('.didyoumean-yes').addEventListener('click', () => {
-            qInput.value = suggestion.name;
-            runSearch(suggestion.name, true);
-          });
-          results.querySelector('.didyoumean-no').addEventListener('click', () => runSearch(query, true));
-          return;
-        }
-      }
+    goBtn.disabled = true;
+
+    let group = [query];
+    if (aniListAutoToggle.checked) {
+      results.innerHTML = '<p class="status">Checking AniList for alternate titles…</p>';
+      group = await fetchAniListAliases(query);
     }
 
-    goBtn.disabled = true;
-    const group = getAliasGroup(query);
     // Combine alias group into ONE query using OR, instead of one Tavily call per alias.
     // Note: Tavily is a neural/semantic search engine, not a classic keyword engine —
     // "OR" isn't a documented, guaranteed operator here. It tends to work well in practice
@@ -427,7 +321,7 @@ Solo Leveling, Only I Level Up"></textarea>
             ? includeInput.value.split(',').map(d => d.trim()).filter(Boolean)
             : undefined);
 
-      // Cache key covers the actual query sent plus the domain filter in effect 
+      // Cache key covers the actual query sent plus the domain filter in effect —
       // same search under a different filter is a genuinely different request.
       const cacheKey = 'tavily_cache:' + JSON.stringify({
         q: combinedQuery,
