@@ -136,7 +136,7 @@
   </div>
 
   <div class="toggle-row">
-    <span>Auto-detect aliases via AniList</span>
+    <span>Auto-detect aliases (AniList + MyAnimeList)</span>
     <label class="switch">
       <input type="checkbox" id="aniListAutoToggle">
       <span class="slider"></span>
@@ -178,6 +178,16 @@
     "mangakakalot.fun", "1manga.co", "anisascans.in", "arenascan.com", "artlapsa.com",
     "bbato.com", "bookwalker.jp", "asurascans.com", "comicfury.com", "comix.to", "flamecomics.xyz"
   ];
+
+  // Domains with real structured chapter data available (MangaDex's own API,
+  // or sites indexed by the Comick Source API aggregator). Only these get a
+  // "Check chapter count" button at all. Every other domain in the list
+  // above has no reliable lookup source, so no button is shown for them.
+  const MANGADEX_TITLE_RE = /mangadex\.org\/title\/([0-9a-f-]{36})/i;
+  const COMICK_SOURCE_RE = /flamecomics\.xyz|asurascans\.com|ksgroupscans\.com|kuramanga\.com|comix\.to/i;
+  function hasStructuredChapterSource(url) {
+    return MANGADEX_TITLE_RE.test(url) || COMICK_SOURCE_RE.test(url);
+  }
 
   const qInput = document.getElementById('q');
   const keyInput = document.getElementById('apiKey');
@@ -232,6 +242,44 @@
     } catch {
       return { names: [title], status: 'error' };  // network hiccup
     }
+  }
+
+  // Fallback source: Jikan, an unofficial MyAnimeList API. Same shape and
+  // same tight-alias logic as the AniList function above.
+  async function fetchJikanAliases(title) {
+    try {
+      const resp = await fetch(`https://api.jikan.moe/v4/manga?q=${encodeURIComponent(title)}&limit=1`);
+      if (!resp.ok) return { names: [title], status: 'error' };
+      const data = await resp.json();
+      const entry = (data.data || [])[0];
+      if (!entry) return { names: [title], status: 'no_match' };
+
+      const names = new Set();
+      if (entry.title_english) names.add(entry.title_english.trim());
+      if (entry.title) names.add(entry.title.trim());
+      if (!names.size) names.add(title);
+      return { names: [...names], status: 'matched' };
+    } catch {
+      return { names: [title], status: 'error' };
+    }
+  }
+
+  // Tries AniList first. If it errors or has no entry, tries Jikan (MAL) next
+  // before giving up and just searching the raw typed text. This way a
+  // temporary outage or rate limit on one service doesn't block the feature.
+  async function fetchAliasesWithFallback(title) {
+    const primary = await fetchAniListAliases(title);
+    if (primary.status === 'matched') return { ...primary, source: 'AniList' };
+
+    const fallback = await fetchJikanAliases(title);
+    if (fallback.status === 'matched') return { ...fallback, source: 'MyAnimeList' };
+
+    // Neither source matched. If either one gave a definite "not found"
+    // (rather than an outright request failure), report that as the
+    // clearer, more honest outcome instead of a generic error.
+    const finalStatus = (primary.status === 'no_match' || fallback.status === 'no_match')
+      ? 'no_match' : 'error';
+    return { names: [title], status: finalStatus, source: null };
   }
   manhwaToggle.checked = localStorage.getItem('manhwa_toggle') === 'true';
   manhwaToggle.addEventListener('change', () => {
@@ -310,12 +358,14 @@
     goBtn.disabled = true;
 
     let group = [query];
-    let aniListStatus = null;  // null = toggle was off, didn't check at all
+    let lookupStatus = null;  // null = toggle was off, didn't check at all
+    let lookupSource = null;  // which service actually matched, if any
     if (aniListAutoToggle.checked) {
       results.innerHTML = '<p class="status">Checking AniList for alternate titles…</p>';
-      const lookup = await fetchAniListAliases(query);
+      const lookup = await fetchAliasesWithFallback(query);
       group = lookup.names;
-      aniListStatus = lookup.status;
+      lookupStatus = lookup.status;
+      lookupSource = lookup.source;
     }
 
     // Combine alias group into ONE query using OR, instead of one Tavily call per alias.
@@ -410,13 +460,20 @@
         const rawUrl = r.url || '';
         const safeUrl = escapeHtml(safeHref(rawUrl));
         const displayUrl = escapeHtml(rawUrl);
+        // Only show the chapter-check button for sites with a real,
+        // structured data source. Every other site would just fall back to
+        // a guessed text-pattern match, which isn't reliable enough to
+        // offer by default.
+        const chapterRow = hasStructuredChapterSource(rawUrl)
+          ? `<div class="chapter-row">
+              <button type="button" class="chapter-check-btn" data-url="${escapeHtml(rawUrl)}">Check chapter count</button>
+              <span class="chapter-result"></span>
+            </div>`
+          : '';
         rows.push(`<div class="result">
           <div class="domain">${safeName}</div>
           <a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${displayUrl}</a>
-          <div class="chapter-row">
-            <button type="button" class="chapter-check-btn" data-url="${escapeHtml(rawUrl)}">Check chapter count</button>
-            <span class="chapter-result"></span>
-          </div>
+          ${chapterRow}
         </div>`);
       }
 
@@ -435,16 +492,16 @@
         : (creditCost || 'credit usage not reported');
 
       const wasCorrected = group.length === 1 && group[0].toLowerCase() !== query.toLowerCase();
-      const aniListTag = aniListStatus === 'no_match'
-        ? ' (no AniList match, searched as typed)'
-        : aniListStatus === 'error'
-          ? ' (AniList lookup failed, searched as typed)'
+      const lookupTag = lookupStatus === 'no_match'
+        ? ' (no match on AniList or MyAnimeList, searched as typed)'
+        : lookupStatus === 'error'
+          ? ' (alias lookup failed, searched as typed)'
           : '';
       const aliasNote = group.length > 1
         ? `<p class="summary">Searched as: ${group.map(escapeHtml).join(' OR ')}, ${costLabel}, ${names.size} unique sites</p>`
         : wasCorrected
-          ? `<p class="summary">Searched as: ${escapeHtml(group[0])} (auto-corrected via AniList), ${costLabel}, ${names.size} unique sites</p>`
-          : `<p class="summary">${organic.length} results${escapeHtml(aniListTag)}, ${costLabel}, ${names.size} unique sites</p>`;
+          ? `<p class="summary">Searched as: ${escapeHtml(group[0])} (auto-corrected via ${escapeHtml(lookupSource || 'alias lookup')}), ${costLabel}, ${names.size} unique sites</p>`
+          : `<p class="summary">${organic.length} results${escapeHtml(lookupTag)}, ${costLabel}, ${names.size} unique sites</p>`;
 
       results.innerHTML = `
         ${aliasNote}
@@ -464,59 +521,102 @@
     }
   }
 
-  async function checkChapterCount(url, btn, forceRefresh) {
-    const apiKey = keyInput.value.trim();
-    if (!apiKey) return;
-    const label = btn.nextElementSibling;
+  // MangaDex has a real, free, public API, so its chapter count comes from
+  // official structured data instead of guessing from scraped text. MangaDex
+  // title URLs already contain the manga's UUID, e.g.
+  // mangadex.org/title/{uuid}/{slug}, so no separate search step is needed.
+  // Costs zero Tavily credits, since this never touches Tavily at all.
+  async function checkMangaDexChapterCount(url) {
+    const match = url.match(MANGADEX_TITLE_RE);
+    if (!match) return null;  // not a recognizable MangaDex title URL
 
+    const mangaId = match[1];
+    const resp = await fetch(
+      `https://api.mangadex.org/manga/${mangaId}/feed?translatedLanguage[]=en&order[chapter]=desc&limit=1`
+    );
+    if (!resp.ok) throw new Error(`MangaDex API error (${resp.status})`);
+    const data = await resp.json();
+    const latest = (data.data || [])[0];
+    if (!latest) return { text: 'No English chapters found on MangaDex', found: false };
+
+    const chapterNum = latest.attributes && latest.attributes.chapter;
+    const total = typeof data.total === 'number' ? data.total : null;
+    const text = chapterNum
+      ? `MangaDex: Ch. ${chapterNum}${total ? ` (${total} English chapters)` : ''}`
+      : 'MangaDex: chapter number unavailable';
+    return { text, found: true };
+  }
+
+  // Flame Comics, Asura Scans, KS Group Scans, KuraManga, and Comix are all
+  // indexed by a free third-party aggregator (Comick Source API), which
+  // scrapes and structures their chapter data.
+  async function checkComickSourceChapterCount(url) {
+    if (!COMICK_SOURCE_RE.test(url)) return null;
+
+    const resp = await fetch('https://comick-source-api.notaspider.dev/api/chapters', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    });
+    if (!resp.ok) throw new Error(`Comick Source API error (${resp.status})`);
+    const data = await resp.json();
+    const chapters = data.chapters || [];
+    if (!chapters.length) return { text: `No chapters found via ${data.source || 'aggregator'}`, found: false };
+
+    const highest = Math.max(...chapters.map(c => c.number || 0));
+    const total = typeof data.totalChapters === 'number' ? data.totalChapters : chapters.length;
+    return { text: `${data.source || 'Aggregator'}: Ch. ${highest} (${total} chapters)`, found: true };
+  }
+
+  // Shared renderer for any structured (non-regex-guessed) chapter result,
+  // used by both the MangaDex and Comick Source API paths below, so the
+  // display logic only needs to exist once.
+  function renderStructuredChapterResult(label, btn, url, text, found, fromCache) {
+    const suffix = fromCache ? ' (cached)' : '';
+    label.innerHTML = `${escapeHtml(text)}${escapeHtml(suffix)} <button type="button" class="recheck-btn">Recheck</button>`;
+    label.style.color = found ? 'var(--lavender)' : 'var(--paper-dim)';
+    label.querySelector('.recheck-btn').addEventListener('click', () => checkChapterCount(url, btn, true));
+    btn.disabled = false;
+    btn.textContent = 'Check chapter count';
+  }
+
+  async function checkChapterCount(url, btn, forceRefresh) {
+    const label = btn.nextElementSibling;
     btn.disabled = true;
     btn.textContent = 'Checking…';
 
-    try {
-      const cacheKey = 'tavily_extract_cache:' + url;
-      let content;
-      let fromCache = false;
-      let creditNote = '';
-      const cached = !forceRefresh && cacheGet(cacheKey);
-      if (cached) {
-        content = cached;
-        fromCache = true;
-      } else {
-        const resp = await fetch('https://api.tavily.com/extract', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ api_key: apiKey, urls: [url], extract_depth: 'basic', include_usage: true })
-        });
-        if (!resp.ok) throw new Error(`Extract error (${resp.status})`);
-        const data = await resp.json();
-        const result = (data.results || [])[0];
-        if (!result || !result.raw_content) throw new Error('No content extracted');
-        content = result.raw_content;
-        creditNote = data.usage && typeof data.usage.credits === 'number'
-          ? ` (${data.usage.credits} credit${data.usage.credits === 1 ? '' : 's'})`
-          : '';
-        cacheSet(cacheKey, content);
+    // Only structured-data sources are attempted here: MangaDex's official
+    // API, then Comick Source API (Flame Comics, Asura Scans, KS Group
+    // Scans, KuraManga, Comix). This button only renders for URLs matching
+    // one of these in the first place (see hasStructuredChapterSource), so
+    // there's no generic guessed fallback to reach for anything else.
+    const structuredSources = [
+      { key: 'mangadex_api_cache:', fn: checkMangaDexChapterCount },
+      { key: 'comick_source_cache:', fn: checkComickSourceChapterCount }
+    ];
+    for (const { key, fn } of structuredSources) {
+      try {
+        const cacheKey = key + url;
+        const cached = !forceRefresh && cacheGet(cacheKey);
+        if (cached) {
+          renderStructuredChapterResult(label, btn, url, cached, true, true);
+          return;
+        }
+        const result = await fn(url);
+        if (result) {
+          cacheSet(cacheKey, result.text);
+          renderStructuredChapterResult(label, btn, url, result.text, result.found, false);
+          return;
+        }
+      } catch {
+        // This source failed. Try the next one.
       }
-
-      // Best-effort pattern match. Looks for "Chapter 123", "Ch. 45", "Ch 45.5", etc.
-      // and takes the highest number found. Accuracy depends entirely on how that
-      // specific site formats its chapter list in plain text.
-      const matches = [...content.matchAll(/\bch(?:apter)?\.?\s*(\d+(?:\.\d+)?)\b/gi)];
-      const resultText = !matches.length
-        ? 'No chapter numbers detected'
-        : `Highest found: Ch. ${Math.max(...matches.map(m => parseFloat(m[1])))}`;
-      const sourceTag = fromCache ? ' (cached, tap Recheck for latest)' : creditNote;
-
-      label.innerHTML = `${escapeHtml(resultText)}${escapeHtml(sourceTag)} <button type="button" class="recheck-btn">Recheck</button>`;
-      label.style.color = matches.length ? 'var(--lavender)' : 'var(--paper-dim)';
-      label.querySelector('.recheck-btn').addEventListener('click', () => checkChapterCount(url, btn, true));
-    } catch (e) {
-      label.textContent = `Couldn't check: ${e.message}`;
-      label.style.color = 'var(--red)';
-    } finally {
-      btn.disabled = false;
-      btn.textContent = 'Check chapter count';
     }
+
+    label.textContent = 'No chapter data available for this site';
+    label.style.color = 'var(--paper-dim)';
+    btn.disabled = false;
+    btn.textContent = 'Check chapter count';
   }
 </script>
 
