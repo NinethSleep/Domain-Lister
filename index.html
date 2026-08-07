@@ -20,6 +20,14 @@
   h1 span{color:var(--accent);}
   .sub{color:var(--paper-dim);font-size:13px;margin:0;}
   .search-wrap{padding:18px 20px 8px;}
+  .alt-names{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;}
+  .alt-names-label{width:100%;font-size:11px;color:var(--paper-dim);margin-bottom:2px;}
+  .alt-name-chip{
+    background:var(--panel-2);border:1px solid var(--border);color:var(--lavender);
+    font-size:12.5px;padding:6px 12px;border-radius:20px;cursor:pointer;box-shadow:var(--bevel);
+  }
+  .alt-name-chip:active{opacity:0.8;}
+  .alt-name-chip .src{color:var(--paper-dim);font-size:10.5px;}
   .row{display:flex;gap:8px;}
   input[type=text]{
     flex:1;padding:14px 16px;background:var(--panel);border:2px solid var(--border);
@@ -167,6 +175,7 @@
     <input type="text" id="q" placeholder="Search query..." autocomplete="off">
     <button id="go">Search</button>
   </div>
+  <div id="altNames" class="alt-names" hidden></div>
 </div>
 
 <main id="results">
@@ -202,6 +211,7 @@
   const manhwaToggle = document.getElementById('manhwaToggle');
   const goBtn = document.getElementById('go');
   const results = document.getElementById('results');
+  const altNames = document.getElementById('altNames');
 
   // Persist the key and custom domain list in this browser only.
   keyInput.value = localStorage.getItem('tavily_key') || '';
@@ -338,6 +348,72 @@
       : null;
     return { names: [title], status: finalStatus, source: null, detail };
   }
+
+  // Live "alternative names" suggestions, shown below the search box as you
+  // type. Unlike fetchAliasesWithFallback (used at actual search time, which
+  // stops at the first source that matches), this queries all three sources
+  // in parallel and shows every distinct name any of them returns, since the
+  // point here is exploration, not picking one automatically.
+  let altNamesRequestId = 0;
+
+  async function updateAltNameSuggestions(query) {
+    const thisRequestId = ++altNamesRequestId;
+    if (!query || query.length < 2 || !aniListAutoToggle.checked) {
+      altNames.hidden = true;
+      altNames.innerHTML = '';
+      return;
+    }
+
+    const [mu, al, jk] = await Promise.all([
+      fetchMangaUpdatesAliases(query),
+      fetchAniListAliases(query),
+      fetchJikanAliases(query)
+    ]);
+
+    // A newer keystroke fired another request while this one was in
+    // flight. Drop this now-stale result rather than overwriting a more
+    // current suggestion list.
+    if (thisRequestId !== altNamesRequestId) return;
+
+    const seen = new Set([query.toLowerCase()]);
+    const suggestions = [];
+    for (const [result, source] of [[mu, 'MangaUpdates'], [al, 'AniList'], [jk, 'MyAnimeList']]) {
+      if (result.status !== 'matched') continue;
+      for (const name of result.names) {
+        const lower = name.toLowerCase();
+        if (seen.has(lower)) continue;
+        seen.add(lower);
+        suggestions.push({ name, source });
+      }
+    }
+
+    if (!suggestions.length) {
+      altNames.hidden = true;
+      altNames.innerHTML = '';
+      return;
+    }
+
+    altNames.hidden = false;
+    altNames.innerHTML = `
+      <span class="alt-names-label">Alternative names:</span>
+      ${suggestions.map(s => `<button type="button" class="alt-name-chip">${escapeHtml(s.name)} <span class="src">(${escapeHtml(s.source)})</span></button>`).join('')}
+    `;
+    altNames.querySelectorAll('.alt-name-chip').forEach((btn, i) => {
+      btn.addEventListener('click', () => {
+        qInput.value = suggestions[i].name;
+        altNames.hidden = true;
+        altNames.innerHTML = '';
+        qInput.focus();
+      });
+    });
+  }
+
+  let altNamesDebounceTimer;
+  qInput.addEventListener('input', () => {
+    clearTimeout(altNamesDebounceTimer);
+    altNamesDebounceTimer = setTimeout(() => updateAltNameSuggestions(qInput.value.trim()), 500);
+  });
+
   manhwaToggle.checked = localStorage.getItem('manhwa_toggle') === 'true';
   manhwaToggle.addEventListener('change', () => {
     localStorage.setItem('manhwa_toggle', manhwaToggle.checked);
@@ -615,12 +691,18 @@
         return;
       }
 
+      // Dedup by actual domain rather than the guessed display name, since
+      // the same site can produce slightly different guessed names across
+      // different pages (inconsistent title formatting). Domain is the more
+      // reliable signal for "is this really the same site."
+      const seenDomains = new Set();
       const names = new Map();  // siteName -> domain (for chip fallback display)
       const rows = [];
       for (const r of organic) {
         const domain = cleanDomain(r.url);
+        if (domain && seenDomains.has(domain)) continue;  // already showed this site
+        if (domain) seenDomains.add(domain);
         const siteName = guessSiteName(r.title, domain);
-        if (names.has(siteName)) continue;
         names.set(siteName, domain);
         const safeName = escapeHtml(siteName);
         const rawUrl = r.url || '';
