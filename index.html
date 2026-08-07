@@ -8,7 +8,7 @@
   @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600&display=swap');
   :root{
     --ink:#121014; --panel:#1c1a20; --panel-2:#232028;
-    --paper:#EDEAE4; --paper-dim:#9a958f; --red:#FF4B3E;
+    --paper:#EDEAE4; --paper-dim:#9a958f; --accent:#3E8FFF; --error:#FF4B3E;
     --lavender:#8B85C1; --border:#332f38;
     --radius:10px;
     --bevel: inset 0 1px 0 rgba(255,255,255,0.06), inset 0 -1px 0 rgba(0,0,0,0.25);
@@ -17,7 +17,7 @@
   body{margin:0;background:var(--ink);color:var(--paper);font-family:'Inter',system-ui,sans-serif;min-height:100vh;}
   header{padding:28px 20px 14px;border-bottom:2px solid var(--border);}
   h1{font-family:'Bebas Neue',sans-serif;font-size:34px;letter-spacing:1px;margin:0 0 4px;}
-  h1 span{color:var(--red);}
+  h1 span{color:var(--accent);}
   .sub{color:var(--paper-dim);font-size:13px;margin:0;}
   .search-wrap{padding:18px 20px 8px;}
   .row{display:flex;gap:8px;}
@@ -26,9 +26,9 @@
     color:var(--paper);font-size:16px;font-family:'Inter',sans-serif;border-radius:var(--radius);outline:none;
     box-shadow:var(--bevel);
   }
-  input[type=text]:focus{border-color:var(--red);}
+  input[type=text]:focus{border-color:var(--accent);}
   button{
-    padding:14px 18px;background:var(--red);color:var(--ink);border:none;
+    padding:14px 18px;background:var(--accent);color:var(--ink);border:none;
     font-family:'Bebas Neue',sans-serif;font-size:17px;letter-spacing:0.5px;
     border-radius:var(--radius);cursor:pointer;box-shadow:var(--bevel);
   }
@@ -77,11 +77,17 @@
     content:"";position:absolute;height:20px;width:20px;left:3px;bottom:3px;
     background:var(--paper);transition:0.2s;border-radius:50%;
   }
-  .switch input:checked + .slider{background:var(--red);}
+  .switch input:checked + .slider{background:var(--accent);}
   .switch input:checked + .slider::before{transform:translateX(20px);}
   main{padding:8px 20px 60px;}
   .status{color:var(--paper-dim);font-size:13px;padding:20px 0;text-align:center;}
-  .status.error{color:var(--red);}
+  .status.error{color:var(--error);}
+  .status button{
+    background:var(--panel-2);color:var(--paper);border:1px solid var(--border);
+    padding:10px 14px;border-radius:var(--radius);font-family:'Inter',sans-serif;font-size:13px;
+    margin:4px 6px 0 0;cursor:pointer;box-shadow:var(--bevel);
+  }
+  .status button.didyoumean-yes{border-color:var(--accent);color:var(--accent);}
   .summary{
     color:var(--lavender);font-size:13px;padding:14px 0 6px;
     border-bottom:1px solid var(--border);margin-bottom:10px;
@@ -205,11 +211,6 @@
   aniListAutoToggle.checked = localStorage.getItem('anilist_auto') !== 'false';  // on by default
   aniListAutoToggle.addEventListener('change', () => localStorage.setItem('anilist_auto', aniListAutoToggle.checked));
 
-  // Fetches AniList's known alternate titles for a search term.
-  // Costs zero Tavily credits since AniList's API is free and separate.
-  // Returns { names, status, detail } where status is one of:
-  //   'matched': AniList found the title, names may include a correction
-  //   'no_match': AniList has no entry for this search text at all
   // Primary source: MangaUpdates. Tried first, since it's a large, dedicated
   // manga/manhwa/manhua database (unlike AniList/MAL, which lean anime-first).
   // Its search endpoint doesn't require an auth token for read access. Note:
@@ -243,10 +244,14 @@
     }
   }
 
-  //   'error': the AniList request itself failed (network/API issue).
-  //     detail carries the actual HTTP status or error message, so a
-  //     rate limit (429) can be told apart from an outage or a plain
-  //     network failure instead of showing one generic "failed" message.
+  // Second source: AniList. Costs zero Tavily credits since its API is free
+  // and separate. Returns { names, status, detail } where status is one of:
+  //   'matched': found the title, names may include a correction
+  //   'no_match': no entry exists for this search text at all
+  //   'error': the request itself failed (network/API issue). detail
+  //     carries the actual HTTP status or error message, so a rate limit
+  //     (429) can be told apart from an outage or a plain network failure
+  //     instead of showing one generic "failed" message.
   async function fetchAniListAliases(title) {
     try {
       const query = `
@@ -278,7 +283,7 @@
       if (media.title.romaji) names.add(media.title.romaji.trim());
       if (!names.size) names.add(title);
       return { names: [...names], status: 'matched' };
-    } catch (e) {
+    } catch {
       return { names: [title], status: 'error', detail: 'network error' };
     }
   }
@@ -306,9 +311,6 @@
     }
   }
 
-  // Tries AniList first. If it errors or has no entry, tries Jikan (MAL) next
-  // before giving up and just searching the raw typed text. This way a
-  // temporary outage or rate limit on one service doesn't block the feature.
   // Tries MangaUpdates first, then AniList, then Jikan (MAL). Stops at the
   // first one that finds a match. Only gives up and searches the raw typed
   // text if all three fail or have no entry, so a single outage (like
@@ -320,19 +322,19 @@
       { fn: fetchJikanAliases, source: 'MyAnimeList' }
     ];
 
-    const results = [];
+    const attemptResults = [];
     for (const { fn, source } of attempts) {
       const result = await fn(title);
       if (result.status === 'matched') return { ...result, source };
-      results.push({ source, ...result });
+      attemptResults.push({ source, ...result });
     }
 
     // Nothing matched. If any source gave a definite "not found" (rather
     // than an outright request failure), report that as the clearer,
     // more honest outcome instead of a generic error.
-    const finalStatus = results.some(r => r.status === 'no_match') ? 'no_match' : 'error';
+    const finalStatus = attemptResults.some(r => r.status === 'no_match') ? 'no_match' : 'error';
     const detail = finalStatus === 'error'
-      ? results.map(r => `${r.source}: ${r.detail || 'unknown'}`).join(', ')
+      ? attemptResults.map(r => `${r.source}: ${r.detail || 'unknown'}`).join(', ')
       : null;
     return { names: [title], status: finalStatus, source: null, detail };
   }
@@ -355,11 +357,13 @@
 
   const clearCacheBtn = document.getElementById('clearCacheBtn');
   clearCacheBtn.addEventListener('click', () => {
-    const keys = Object.keys(localStorage).filter(k =>
+    const cacheKeys = Object.keys(localStorage).filter(k =>
       k.startsWith('tavily_cache:') || k.startsWith('tavily_extract_cache:')
     );
-    keys.forEach(k => localStorage.removeItem(k));
-    results.innerHTML = `<p class="status">Cleared ${keys.length} cached item${keys.length === 1 ? '' : 's'} (searches + chapter checks).</p>`;
+    cacheKeys.forEach(k => localStorage.removeItem(k));
+    const knownCount = getKnownTitles().length;
+    localStorage.removeItem(KNOWN_TITLES_KEY);
+    results.innerHTML = `<p class="status">Cleared ${cacheKeys.length} cached item${cacheKeys.length === 1 ? '' : 's'} and ${knownCount} remembered title${knownCount === 1 ? '' : 's'}.</p>`;
   });
 
   // Small wrapper so every cache read/write shares one try/catch instead of
@@ -404,11 +408,111 @@
     return domain || title;
   }
 
-  async function runSearch(forceQuery) {
+  // A local "known titles" list, built automatically from past successful
+  // matches (MangaUpdates/AniList/MyAnimeList results). This is the same
+  // idea behind Google's "Did you mean": learning corrections from real
+  // usage, just scaled down to this device's own search history instead
+  // of a global query log. No manual list to type or maintain.
+  const KNOWN_TITLES_KEY = 'known_titles';
+  const KNOWN_TITLES_MAX = 300;
+
+  function getKnownTitles() {
+    try { return JSON.parse(localStorage.getItem(KNOWN_TITLES_KEY) || '[]'); }
+    catch { return []; }
+  }
+
+  function rememberTitle(title) {
+    if (!title) return;
+    const known = getKnownTitles();
+    const lower = title.toLowerCase();
+    if (known.some(t => t.toLowerCase() === lower)) return;  // already known
+    known.push(title);
+    if (known.length > KNOWN_TITLES_MAX) known.shift();  // drop oldest
+    try { localStorage.setItem(KNOWN_TITLES_KEY, JSON.stringify(known)); } catch { /* storage full */ }
+  }
+
+  function levenshtein(a, b) {
+    const m = a.length, n = b.length;
+    const dp = Array.from({length: m + 1}, (_, i) => [i, ...Array(n).fill(0)]);
+    for (let j = 0; j <= n; j++) dp[0][j] = j;
+    for (let i = 1; i <= m; i++) {
+      for (let j = 1; j <= n; j++) {
+        dp[i][j] = a[i-1] === b[j-1]
+          ? dp[i-1][j-1]
+          : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
+      }
+    }
+    return dp[m][n];
+  }
+
+  // Trigram (3-character chunk) similarity, the same technique behind
+  // Postgres' pg_trgm and much of Elasticsearch's fuzzy matching. Catches
+  // transpositions and partial-word matches that edit distance alone can
+  // miss, so combining both signals is more reliable than either alone.
+  function trigramSet(str) {
+    const padded = `  ${str.toLowerCase()}  `;
+    const grams = new Set();
+    for (let i = 0; i < padded.length - 2; i++) grams.add(padded.slice(i, i + 3));
+    return grams;
+  }
+  function trigramSimilarity(a, b) {
+    const setA = trigramSet(a), setB = trigramSet(b);
+    if (!setA.size || !setB.size) return 0;
+    let shared = 0;
+    for (const g of setA) if (setB.has(g)) shared++;
+    return shared / Math.max(setA.size, setB.size);  // Dice-like coefficient, 0 to 1
+  }
+
+  // Checks the query against locally remembered titles. Requires BOTH a low
+  // edit distance AND reasonable trigram overlap before suggesting a
+  // correction, since requiring agreement between two different techniques
+  // cuts down on false positives either one alone might raise.
+  function findKnownTitleMatch(query) {
+    const known = getKnownTitles();
+    const q = query.toLowerCase();
+    let best = null;
+    let bestScore = -1;
+    for (const title of known) {
+      if (title.toLowerCase() === q) return null;  // exact match, nothing to suggest
+      const dist = levenshtein(q, title.toLowerCase());
+      const threshold = Math.min(4, Math.max(1, Math.floor(title.length * 0.25)));
+      const trigramScore = trigramSimilarity(q, title);
+      if (dist > 0 && dist <= threshold && trigramScore >= 0.4 && trigramScore > bestScore) {
+        bestScore = trigramScore;
+        best = title;
+      }
+    }
+    return best;
+  }
+
+  async function runSearch(forceQuery, skipTypoCheck) {
     const query = (forceQuery || qInput.value).trim();
     const apiKey = keyInput.value.trim();
     if (!apiKey) { results.innerHTML = '<p class="status error">Add your Tavily API key first.</p>'; return; }
     if (!query) return;
+
+    // Check the query against titles this device has successfully searched
+    // before. This runs before anything else, and before any API call, so
+    // a typo of something you've already searched gets caught instantly
+    // and for free, without waiting on MangaUpdates/AniList/MyAnimeList.
+    if (!skipTypoCheck) {
+      const suggestion = findKnownTitleMatch(query);
+      if (suggestion) {
+        results.innerHTML = `
+          <p class="status">
+            Did you mean <strong style="color:var(--paper)">${escapeHtml(suggestion)}</strong>?
+            <br><br>
+            <button type="button" class="didyoumean-yes">Yes, search that</button>
+            <button type="button" class="didyoumean-no">No, search "${escapeHtml(query)}" as typed</button>
+          </p>`;
+        results.querySelector('.didyoumean-yes').addEventListener('click', () => {
+          qInput.value = suggestion;
+          runSearch(suggestion, true);
+        });
+        results.querySelector('.didyoumean-no').addEventListener('click', () => runSearch(query, true));
+        return;
+      }
+    }
 
     goBtn.disabled = true;
 
@@ -423,6 +527,11 @@
       lookupStatus = lookup.status;
       lookupSource = lookup.source;
       lookupDetail = lookup.detail;
+      // Only remember titles an external source actually confirmed. A raw,
+      // unvalidated query (toggle off, or lookup failed/found nothing)
+      // could itself be a typo, and storing it would poison future
+      // suggestions instead of helping them.
+      if (lookupStatus === 'matched') group.forEach(rememberTitle);
     }
 
     // Combine alias group into ONE query using OR, instead of one Tavily call per alias.
