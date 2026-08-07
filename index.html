@@ -214,6 +214,25 @@
     return MANGADEX_TITLE_RE.test(url) || COMICK_SOURCE_RE.test(url);
   }
 
+  // For actual search-time alias resolution, only romaji/English-style
+  // names should ever get picked, never native script (Korean, Japanese,
+  // Chinese, etc.). MangaUpdates' associated-names list in particular is
+  // unordered, so its "first" entry could easily be a native-script title,
+  // which would then silently replace what was typed and search for
+  // something Tavily's index ranks completely differently. This is a plain
+  // heuristic (Latin letters, digits, and common punctuation only), not a
+  // real script detector, but it's enough to filter out non-Latin titles.
+  //
+  // Range \u0180-\u024F (Latin Extended-B) is included specifically for
+  // Pinyin romanization of Chinese titles: standard accented vowels (ā, á,
+  // à) fall in Latin-1/Extended-A and were already covered, but 3rd-tone
+  // caron marks (ǎ, ě, ǐ, ǒ, ǔ) and ü-with-tone combinations (ǘ, ǚ, ǜ) sit
+  // in Extended-B and would otherwise be wrongly rejected as non-Latin.
+  const LATIN_ONLY_RE = /^[\x00-\x7F\u00C0-\u024F\u2018\u2019\u201C\u201D]+$/;
+  function isLatinName(str) {
+    return !!str && LATIN_ONLY_RE.test(str);
+  }
+
   const qInput = document.getElementById('q');
   const keyInput = document.getElementById('apiKey');
   const includeInput = document.getElementById('includeDomains');
@@ -258,14 +277,22 @@
       if (!record) return { names: [title], status: 'no_match' };
 
       const names = new Set();
-      if (record.title && record.title.trim()) names.add(record.title.trim());
+      if (record.title && record.title.trim() && isLatinName(record.title.trim())) names.add(record.title.trim());
       if (full) {
-        // Every associated title MangaUpdates has on file, not just the first.
+        // Live suggestions: everything, including native-script names, since
+        // seeing those is genuinely useful for exploration here.
         (record.associated || []).forEach(a => { if (a.title && a.title.trim()) names.add(a.title.trim()); });
       } else {
-        const firstAssociated = (record.associated || [])[0];
-        if (firstAssociated && firstAssociated.title && firstAssociated.title.trim()) names.add(firstAssociated.title.trim());
+        // Search-time: only the first Latin-script associated name, not
+        // just whatever happens to be first in MangaUpdates' unordered list.
+        const firstLatinAssociated = (record.associated || [])
+          .map(a => a.title && a.title.trim())
+          .find(t => t && isLatinName(t));
+        if (firstLatinAssociated) names.add(firstLatinAssociated);
       }
+      // If record.title itself wasn't Latin script and no Latin associated
+      // name was found either, fall back to whatever was typed rather than
+      // searching a native-script string that likely won't match well.
       if (!names.size) names.add(title);
       return { names: [...names], status: 'matched' };
     } catch {
@@ -312,8 +339,12 @@
       // suggestion display (full=true), everything AniList has gets shown,
       // since exploration is the point there, not building a lean query.
       const names = new Set();
-      if (media.title.english && media.title.english.trim()) names.add(media.title.english.trim());
-      if (media.title.romaji && media.title.romaji.trim()) names.add(media.title.romaji.trim());
+      // Defensive Latin-script guard: AniList's english/romaji fields should
+      // always already be Latin by design (native script lives in a
+      // separate field), but this catches any unexpected edge case rather
+      // than assuming that's always true.
+      if (media.title.english && media.title.english.trim() && isLatinName(media.title.english.trim())) names.add(media.title.english.trim());
+      if (media.title.romaji && media.title.romaji.trim() && isLatinName(media.title.romaji.trim())) names.add(media.title.romaji.trim());
       if (full) {
         if (media.title.native && media.title.native.trim()) names.add(media.title.native.trim());
         (media.synonyms || []).forEach(s => { if (s && s.trim()) names.add(s.trim()); });
@@ -339,8 +370,9 @@
       if (!entry) return { names: [title], status: 'no_match' };
 
       const names = new Set();
-      if (entry.title_english && entry.title_english.trim()) names.add(entry.title_english.trim());
-      if (entry.title && entry.title.trim()) names.add(entry.title.trim());
+      // Same defensive Latin-script guard as AniList above.
+      if (entry.title_english && entry.title_english.trim() && isLatinName(entry.title_english.trim())) names.add(entry.title_english.trim());
+      if (entry.title && entry.title.trim() && isLatinName(entry.title.trim())) names.add(entry.title.trim());
       if (full) {
         if (entry.title_japanese && entry.title_japanese.trim()) names.add(entry.title_japanese.trim());
         (entry.title_synonyms || []).forEach(s => { if (s && s.trim()) names.add(s.trim()); });
