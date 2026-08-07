@@ -227,12 +227,13 @@
   // its CORS support and exact response shape weren't independently verified
   // before wiring this in, so treat this as a real-world test. If it fails
   // consistently, the chain still falls through to AniList and Jikan below.
-  async function fetchMangaUpdatesAliases(title) {
+  async function fetchMangaUpdatesAliases(title, signal) {
     try {
       const resp = await fetch('https://api.mangaupdates.com/v1/series/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ search: title, page: 1, perpage: 1 })
+        body: JSON.stringify({ search: title, page: 1, perpage: 1 }),
+        signal
       });
       if (!resp.ok) {
         const detail = resp.status === 429 ? 'rate limited' : `HTTP ${resp.status}`;
@@ -262,7 +263,7 @@
   //     carries the actual HTTP status or error message, so a rate limit
   //     (429) can be told apart from an outage or a plain network failure
   //     instead of showing one generic "failed" message.
-  async function fetchAniListAliases(title) {
+  async function fetchAniListAliases(title, signal) {
     try {
       const query = `
         query ($search: String) {
@@ -274,7 +275,8 @@
       const resp = await fetch('https://graphql.anilist.co', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify({ query, variables: { search: title } })
+        body: JSON.stringify({ query, variables: { search: title } }),
+        signal
       });
       if (!resp.ok) {
         const detail = resp.status === 429 ? 'rate limited' : `HTTP ${resp.status}`;
@@ -300,9 +302,9 @@
 
   // Fallback source: Jikan, an unofficial MyAnimeList API. Same shape and
   // same tight-alias logic as the AniList function above.
-  async function fetchJikanAliases(title) {
+  async function fetchJikanAliases(title, signal) {
     try {
-      const resp = await fetch(`https://api.jikan.moe/v4/manga?q=${encodeURIComponent(title)}&limit=1`);
+      const resp = await fetch(`https://api.jikan.moe/v4/manga?q=${encodeURIComponent(title)}&limit=1`, { signal });
       if (!resp.ok) {
         const detail = resp.status === 429 ? 'rate limited' : `HTTP ${resp.status}`;
         return { names: [title], status: 'error', detail };
@@ -354,45 +356,23 @@
   // stops at the first source that matches), this queries all three sources
   // in parallel and shows every distinct name any of them returns, since the
   // point here is exploration, not picking one automatically.
-  let altNamesRequestId = 0;
+  //
+  // Efficiency measures, since this fires repeatedly while typing:
+  //  - Results are cached per query, so retyping something already looked
+  //    up (including backspacing back to it) costs zero network calls.
+  //  - A superseded request's actual fetch calls get aborted via
+  //    AbortController, not just ignored client-side, so typing further
+  //    doesn't leave wasted requests completing in the background.
+  //  - Nothing fires below 3 characters, since 1-2 letters are rarely a
+  //    complete, useful title fragment yet.
+  let altNamesController = null;
 
-  async function updateAltNameSuggestions(query) {
-    const thisRequestId = ++altNamesRequestId;
-    if (!query || query.length < 2 || !aniListAutoToggle.checked) {
-      altNames.hidden = true;
-      altNames.innerHTML = '';
-      return;
-    }
-
-    const [mu, al, jk] = await Promise.all([
-      fetchMangaUpdatesAliases(query),
-      fetchAniListAliases(query),
-      fetchJikanAliases(query)
-    ]);
-
-    // A newer keystroke fired another request while this one was in
-    // flight. Drop this now-stale result rather than overwriting a more
-    // current suggestion list.
-    if (thisRequestId !== altNamesRequestId) return;
-
-    const seen = new Set([query.toLowerCase()]);
-    const suggestions = [];
-    for (const [result, source] of [[mu, 'MangaUpdates'], [al, 'AniList'], [jk, 'MyAnimeList']]) {
-      if (result.status !== 'matched') continue;
-      for (const name of result.names) {
-        const lower = name.toLowerCase();
-        if (seen.has(lower)) continue;
-        seen.add(lower);
-        suggestions.push({ name, source });
-      }
-    }
-
+  function renderAltNameChips(suggestions) {
     if (!suggestions.length) {
       altNames.hidden = true;
       altNames.innerHTML = '';
       return;
     }
-
     altNames.hidden = false;
     altNames.innerHTML = `
       <span class="alt-names-label">Alternative names:</span>
@@ -406,6 +386,56 @@
         qInput.focus();
       });
     });
+  }
+
+  async function updateAltNameSuggestions(query) {
+    // Cancel whatever the previous keystroke's lookup was still doing.
+    if (altNamesController) altNamesController.abort();
+
+    if (!query || query.length < 3 || !aniListAutoToggle.checked) {
+      altNames.hidden = true;
+      altNames.innerHTML = '';
+      return;
+    }
+
+    const cacheKey = 'alt_names_cache:' + query.toLowerCase();
+    const cached = cacheGet(cacheKey);
+    if (cached) {
+      try { renderAltNameChips(JSON.parse(cached)); return; } catch { /* fall through to a fresh fetch */ }
+    }
+
+    const controller = new AbortController();
+    altNamesController = controller;
+
+    const [mu, al, jk] = await Promise.all([
+      fetchMangaUpdatesAliases(query, controller.signal),
+      fetchAniListAliases(query, controller.signal),
+      fetchJikanAliases(query, controller.signal)
+    ]);
+
+    // This exact request was cancelled by a newer keystroke while it was
+    // in flight. Drop it rather than overwriting a more current list.
+    if (controller.signal.aborted) return;
+
+    const seen = new Set([query.toLowerCase()]);
+    const suggestions = [];
+    for (const [result, source] of [[mu, 'MangaUpdates'], [al, 'AniList'], [jk, 'MyAnimeList']]) {
+      if (result.status !== 'matched') continue;
+      for (const name of result.names) {
+        const lower = name.toLowerCase();
+        if (seen.has(lower)) continue;
+        seen.add(lower);
+        suggestions.push({ name, source });
+      }
+    }
+
+    // Only cache if at least one source actually responded successfully.
+    // If every source errored out (offline, rate limited, etc.), the empty
+    // result isn't a real answer and shouldn't get stuck in the cache
+    // permanently, since a retry once things recover should get a real one.
+    const allFailed = [mu, al, jk].every(r => r.status === 'error');
+    if (!allFailed) cacheSet(cacheKey, JSON.stringify(suggestions));
+    renderAltNameChips(suggestions);
   }
 
   let altNamesDebounceTimer;
@@ -434,7 +464,7 @@
   const clearCacheBtn = document.getElementById('clearCacheBtn');
   clearCacheBtn.addEventListener('click', () => {
     const cacheKeys = Object.keys(localStorage).filter(k =>
-      k.startsWith('tavily_cache:') || k.startsWith('tavily_extract_cache:')
+      k.startsWith('tavily_cache:') || k.startsWith('tavily_extract_cache:') || k.startsWith('alt_names_cache:')
     );
     cacheKeys.forEach(k => localStorage.removeItem(k));
     const knownCount = getKnownTitles().length;
@@ -566,6 +596,11 @@
     const apiKey = keyInput.value.trim();
     if (!apiKey) { results.innerHTML = '<p class="status error">Add your Tavily API key first.</p>'; return; }
     if (!query) return;
+
+    // Hide the live alt-names suggestions once an actual search runs, since
+    // they'd otherwise sit above the results looking redundant.
+    altNames.hidden = true;
+    altNames.innerHTML = '';
 
     // Check the query against titles this device has successfully searched
     // before. This runs before anything else, and before any API call, so
