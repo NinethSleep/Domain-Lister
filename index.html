@@ -152,22 +152,6 @@
   </div>
 
   <div class="toggle-row">
-    <span>Auto-detect aliases (MangaUpdates + AniList + MyAnimeList)</span>
-    <label class="switch">
-      <input type="checkbox" id="aniListAutoToggle">
-      <span class="slider"></span>
-    </label>
-  </div>
-
-  <div class="toggle-row">
-    <span>Combine alt names with OR (off: use just one title)</span>
-    <label class="switch">
-      <input type="checkbox" id="combineOrToggle">
-      <span class="slider"></span>
-    </label>
-  </div>
-
-  <div class="toggle-row">
     <span>Advanced search (deeper results, 2 credits instead of 1)</span>
     <label class="switch">
       <input type="checkbox" id="advancedSearchToggle">
@@ -222,14 +206,13 @@
     return MANGADEX_TITLE_RE.test(url) || COMICK_SOURCE_RE.test(url);
   }
 
-  // For actual search-time alias resolution, only romaji/English-style
-  // names should ever get picked, never native script (Korean, Japanese,
-  // Chinese, etc.). MangaUpdates' associated-names list in particular is
-  // unordered, so its "first" entry could easily be a native-script title,
-  // which would then silently replace what was typed and search for
-  // something Tavily's index ranks completely differently. This is a plain
-  // heuristic (Latin letters, digits, and common punctuation only), not a
-  // real script detector, but it's enough to filter out non-Latin titles.
+  // Alternative-name lookups (MangaUpdates/AniList/MyAnimeList) only ever
+  // return romaji/English-style names, never native script (Korean,
+  // Japanese, Chinese, etc.). MangaUpdates' associated-names list in
+  // particular is unordered, so without this filter a native-script title
+  // could easily show up as a suggestion chip. This is a plain heuristic
+  // (Latin letters, digits, and common punctuation only), not a real
+  // script detector, but it's enough to filter out non-Latin titles.
   //
   // Range \u0180-\u024F (Latin Extended-B) is included specifically for
   // Pinyin romanization of Chinese titles: standard accented vowels (ā, á,
@@ -244,8 +227,6 @@
   const qInput = document.getElementById('q');
   const keyInput = document.getElementById('apiKey');
   const includeInput = document.getElementById('includeDomains');
-  const aniListAutoToggle = document.getElementById('aniListAutoToggle');
-  const combineOrToggle = document.getElementById('combineOrToggle');
   const advancedSearchToggle = document.getElementById('advancedSearchToggle');
   const manhwaToggle = document.getElementById('manhwaToggle');
   const goBtn = document.getElementById('go');
@@ -257,10 +238,6 @@
   keyInput.addEventListener('change', () => localStorage.setItem('tavily_key', keyInput.value.trim()));
   includeInput.value = localStorage.getItem('tavily_include_domains') || '';
   includeInput.addEventListener('change', () => localStorage.setItem('tavily_include_domains', includeInput.value.trim()));
-  aniListAutoToggle.checked = localStorage.getItem('anilist_auto') !== 'false';  // on by default
-  aniListAutoToggle.addEventListener('change', () => localStorage.setItem('anilist_auto', aniListAutoToggle.checked));
-  combineOrToggle.checked = localStorage.getItem('combine_or') !== 'false';  // on by default
-  combineOrToggle.addEventListener('change', () => localStorage.setItem('combine_or', combineOrToggle.checked));
   advancedSearchToggle.checked = localStorage.getItem('advanced_search') === 'true';  // off by default
   advancedSearchToggle.addEventListener('change', () => localStorage.setItem('advanced_search', advancedSearchToggle.checked));
 
@@ -270,7 +247,7 @@
   // its CORS support and exact response shape weren't independently verified
   // before wiring this in, so treat this as a real-world test. If it fails
   // consistently, the chain still falls through to AniList and Jikan below.
-  async function fetchMangaUpdatesAliases(title, signal, full) {
+  async function fetchMangaUpdatesAliases(title, signal) {
     try {
       const resp = await fetch('https://api.mangaupdates.com/v1/series/search', {
         method: 'POST',
@@ -287,24 +264,14 @@
       const record = result && result.record;
       if (!record) return { names: [title], status: 'no_match' };
 
+      // Every name MangaUpdates has on file, but Latin-script only. Native
+      // Korean/Japanese/Chinese script gets filtered out, since this tool
+      // never shows or searches native-script titles anywhere.
       const names = new Set();
       if (record.title && record.title.trim() && isLatinName(record.title.trim())) names.add(record.title.trim());
-      if (full) {
-        // Live suggestions: every associated title, but still Latin-script
-        // only. Native Korean/Japanese/Chinese script is filtered out here
-        // too now, not just at search time.
-        (record.associated || []).forEach(a => { if (a.title && a.title.trim() && isLatinName(a.title.trim())) names.add(a.title.trim()); });
-      } else {
-        // Search-time: only the first Latin-script associated name, not
-        // just whatever happens to be first in MangaUpdates' unordered list.
-        const firstLatinAssociated = (record.associated || [])
-          .map(a => a.title && a.title.trim())
-          .find(t => t && isLatinName(t));
-        if (firstLatinAssociated) names.add(firstLatinAssociated);
-      }
-      // If record.title itself wasn't Latin script and no Latin associated
-      // name was found either, fall back to whatever was typed rather than
-      // searching a native-script string that likely won't match well.
+      (record.associated || []).forEach(a => { if (a.title && a.title.trim() && isLatinName(a.title.trim())) names.add(a.title.trim()); });
+      // If nothing Latin-script was found at all, fall back to whatever
+      // was typed rather than returning an empty result.
       if (!names.size) names.add(title);
       return { names: [...names], status: 'matched' };
     } catch {
@@ -320,7 +287,7 @@
   //     carries the actual HTTP status or error message, so a rate limit
   //     (429) can be told apart from an outage or a plain network failure
   //     instead of showing one generic "failed" message.
-  async function fetchAniListAliases(title, signal, full) {
+  async function fetchAniListAliases(title, signal) {
     try {
       const query = `
         query ($search: String) {
@@ -343,11 +310,9 @@
       const media = data.data && data.data.Media;
       if (!media) return { names: [title], status: 'no_match' };
 
-      // For search-time use (full=false), this stays tight: only the clean
-      // English and romaji titles. For live suggestion display (full=true),
-      // every other name AniList has gets shown too, EXCEPT native script
-      // (native title, and any synonym written in native script), which is
-      // filtered out here just like at search time now.
+      // English, romaji, and every synonym, Latin-script only.
+      // media.title.native intentionally skipped: always native script,
+      // and this tool never shows or searches native-script titles.
       const names = new Set();
       // Defensive Latin-script guard: AniList's english/romaji fields should
       // always already be Latin by design (native script lives in a
@@ -355,10 +320,7 @@
       // than assuming that's always true.
       if (media.title.english && media.title.english.trim() && isLatinName(media.title.english.trim())) names.add(media.title.english.trim());
       if (media.title.romaji && media.title.romaji.trim() && isLatinName(media.title.romaji.trim())) names.add(media.title.romaji.trim());
-      if (full) {
-        // media.title.native intentionally skipped: always native script.
-        (media.synonyms || []).forEach(s => { if (s && s.trim() && isLatinName(s.trim())) names.add(s.trim()); });
-      }
+      (media.synonyms || []).forEach(s => { if (s && s.trim() && isLatinName(s.trim())) names.add(s.trim()); });
       if (!names.size) names.add(title);
       return { names: [...names], status: 'matched' };
     } catch {
@@ -368,7 +330,7 @@
 
   // Fallback source: Jikan, an unofficial MyAnimeList API. Same shape and
   // same tight-alias logic as the AniList function above.
-  async function fetchJikanAliases(title, signal, full) {
+  async function fetchJikanAliases(title, signal) {
     try {
       const resp = await fetch(`https://api.jikan.moe/v4/manga?q=${encodeURIComponent(title)}&limit=1`, { signal });
       if (!resp.ok) {
@@ -379,14 +341,12 @@
       const entry = (data.data || [])[0];
       if (!entry) return { names: [title], status: 'no_match' };
 
-      const names = new Set();
       // Same defensive Latin-script guard as AniList above.
+      // entry.title_japanese intentionally skipped: always native script.
+      const names = new Set();
       if (entry.title_english && entry.title_english.trim() && isLatinName(entry.title_english.trim())) names.add(entry.title_english.trim());
       if (entry.title && entry.title.trim() && isLatinName(entry.title.trim())) names.add(entry.title.trim());
-      if (full) {
-        // entry.title_japanese intentionally skipped: always native script.
-        (entry.title_synonyms || []).forEach(s => { if (s && s.trim() && isLatinName(s.trim())) names.add(s.trim()); });
-      }
+      (entry.title_synonyms || []).forEach(s => { if (s && s.trim() && isLatinName(s.trim())) names.add(s.trim()); });
       if (!names.size) names.add(title);
       return { names: [...names], status: 'matched' };
     } catch {
@@ -394,39 +354,12 @@
     }
   }
 
-  // Tries MangaUpdates first, then AniList, then Jikan (MAL). Stops at the
-  // first one that finds a match. Only gives up and searches the raw typed
-  // text if all three fail or have no entry, so a single outage (like
-  // MyAnimeList's earlier today) doesn't block the feature entirely.
-  async function fetchAliasesWithFallback(title) {
-    const attempts = [
-      { fn: fetchMangaUpdatesAliases, source: 'MangaUpdates' },
-      { fn: fetchAniListAliases, source: 'AniList' },
-      { fn: fetchJikanAliases, source: 'MyAnimeList' }
-    ];
-
-    const attemptResults = [];
-    for (const { fn, source } of attempts) {
-      const result = await fn(title);
-      if (result.status === 'matched') return { ...result, source };
-      attemptResults.push({ source, ...result });
-    }
-
-    // Nothing matched. If any source gave a definite "not found" (rather
-    // than an outright request failure), report that as the clearer,
-    // more honest outcome instead of a generic error.
-    const finalStatus = attemptResults.some(r => r.status === 'no_match') ? 'no_match' : 'error';
-    const detail = finalStatus === 'error'
-      ? attemptResults.map(r => `${r.source}: ${r.detail || 'unknown'}`).join(', ')
-      : null;
-    return { names: [title], status: finalStatus, source: null, detail };
-  }
-
   // Live "alternative names" suggestions, shown below the search box as you
-  // type. Unlike fetchAliasesWithFallback (used at actual search time, which
-  // stops at the first source that matches), this queries all three sources
-  // in parallel and shows every distinct name any of them returns, since the
-  // point here is exploration, not picking one automatically.
+  // type. This is the only place these three sources get queried now.
+  // Search itself no longer does its own lookup, it always just searches
+  // exactly what's in the search bar; queries all three sources in parallel
+  // and shows every distinct name any of them returns, since the point
+  // here is exploration and giving you options to tap into the search bar.
   //
   // Efficiency measures, since this fires repeatedly while typing:
   //  - Results are cached per query, so retyping something already looked
@@ -492,7 +425,7 @@
     // Cancel whatever the previous keystroke's lookup was still doing.
     if (altNamesController) altNamesController.abort();
 
-    if (!query || query.length < 3 || !aniListAutoToggle.checked) {
+    if (!query || query.length < 3) {
       altNames.hidden = true;
       altNames.innerHTML = '';
       return;
@@ -513,9 +446,9 @@
     altNames.innerHTML = '<span class="alt-names-label">Looking up alternatives…</span>';
 
     const [mu, al, jk] = await Promise.all([
-      fetchMangaUpdatesAliases(query, controller.signal, true),
-      fetchAniListAliases(query, controller.signal, true),
-      fetchJikanAliases(query, controller.signal, true)
+      fetchMangaUpdatesAliases(query, controller.signal),
+      fetchAniListAliases(query, controller.signal),
+      fetchJikanAliases(query, controller.signal)
     ]);
 
     // This exact request was cancelled by a newer keystroke while it was
@@ -538,6 +471,13 @@
         suggestions.push({ name, source });
       }
     }
+
+    // Remember every confirmed name from a successful lookup, so the local
+    // typo-correction feature (findKnownTitleMatch, used when you actually
+    // search) keeps working. This used to happen at search time; now that
+    // search never does its own lookup, this live-suggestion fetch is the
+    // only place titles get validated and learned.
+    suggestions.forEach(s => rememberTitle(s.name));
 
     // Only cache if at least one source actually responded successfully.
     // If every source errored out (offline, rate limited, etc.), the empty
@@ -702,9 +642,8 @@
   }
 
   // Runs one Tavily search (checking cache first), returning its results
-  // and real credit cost. Extracted so runSearch can call this once for a
-  // normal search, or twice when a correction needs merging with the raw
-  // typed text (see the "queriesToRun" logic below).
+  // and real credit cost. Kept as its own function for clarity and so any
+  // future feature that needs another search doesn't duplicate this logic.
   async function runTavilySearch(queryText, includeDomains, apiKey) {
     // Confirmed via Tavily's own docs: advanced depth is included on the
     // free tier, not a paid-only feature. It just costs 2 credits instead
@@ -762,7 +701,11 @@
     // Check the query against titles this device has successfully searched
     // before. This runs before anything else, and before any API call, so
     // a typo of something you've already searched gets caught instantly
-    // and for free, without waiting on MangaUpdates/AniList/MyAnimeList.
+    // and for free. Titles get learned here from the live alt-name
+    // suggestions you've seen while typing, not from a separate lookup at
+    // search time, since search now always just searches exactly what's
+    // in the search bar. Tap a chip beforehand to fill in a corrected or
+    // alternate name if you want a different phrasing searched.
     if (!skipTypoCheck) {
       const suggestion = findKnownTitleMatch(query);
       if (suggestion) {
@@ -783,57 +726,7 @@
     }
 
     goBtn.disabled = true;
-
-    let group = [query];
-    let lookupStatus = null;  // null = toggle was off, didn't check at all
-    let lookupDetail = null;  // real failure reason, when status is 'error'
-    if (aniListAutoToggle.checked) {
-      results.innerHTML = '<p class="status">Checking for alternate titles…</p>';
-      const lookup = await fetchAliasesWithFallback(query);
-      group = lookup.names;
-      lookupStatus = lookup.status;
-      lookupDetail = lookup.detail;
-      // Only remember titles an external source actually confirmed. A raw,
-      // unvalidated query (toggle off, or lookup failed/found nothing)
-      // could itself be a typo, and storing it would poison future
-      // suggestions instead of helping them.
-      if (lookupStatus === 'matched') group.forEach(rememberTitle);
-    }
-
-    // Combine alias group into ONE query using OR, instead of one Tavily call per alias.
-    // Note: Tavily is a neural/semantic search engine, not a classic keyword engine.
-    // "OR" isn't a documented, guaranteed operator here. It occasionally drags in
-    // generic/irrelevant results when several names get jammed into one query, so
-    // this is optional: the "Combine alt names with OR" toggle lets it be skipped
-    // in favor of just using the single best-resolved name instead.
-    const usedOr = combineOrToggle.checked && group.length > 1;
-    const wasCorrected = !usedOr && group[0].toLowerCase() !== query.toLowerCase();
-
-    // Toggling auto-detect on vs. off sends genuinely different text to
-    // Tavily, and since Tavily ranks results semantically (not by exact
-    // keyword match), two different phrasings of "the same" title can
-    // surface different sites, even though they're the same manga to you.
-    // To close that gap: whenever a real correction happened, the raw
-    // typed text gets merged in too, not discarded, so you get the union
-    // of what both phrasings find rather than only whichever one "won."
-    let combinedQuery;
-    let secondQuery = null;  // set only when a second, separate Tavily call is needed
-    if (usedOr) {
-      // Cheap case: folding the raw query into the same OR string costs
-      // nothing extra, since it's still one Tavily call either way.
-      const orNames = group.some(n => n.toLowerCase() === query.toLowerCase())
-        ? group
-        : [...group, query];
-      combinedQuery = orNames.map(n => `"${n}"`).join(' OR ');
-    } else if (wasCorrected) {
-      // OR is off, so merging means two separate calls: the resolved name
-      // and the raw text, results combined client-side after both return.
-      combinedQuery = group[0];
-      secondQuery = query;
-    } else {
-      combinedQuery = group[0];  // use whatever was resolved. Even a single corrected
-                                   // name should replace a misspelled raw query, not fall back to it
-    }
+    results.innerHTML = '<p class="status">Searching…</p>';
 
     try {
       const includeDomains = manhwaToggle.checked
@@ -842,35 +735,8 @@
             ? includeInput.value.split(',').map(d => d.trim()).filter(Boolean)
             : undefined);
 
-      results.innerHTML = secondQuery
-        ? '<p class="status">Searching corrected and original title…</p>'
-        : usedOr
-          ? `<p class="status">Searching combined aliases…</p>`
-          : '<p class="status">Searching…</p>';
-
-      // Run the primary query, and the raw typed text too when a real
-      // correction needs merging in (see the secondQuery logic above).
-      const searchTargets = secondQuery ? [combinedQuery, secondQuery] : [combinedQuery];
-      const searchResults = await Promise.all(
-        searchTargets.map(q => runTavilySearch(q, includeDomains, apiKey))
-      );
-
-      const anyFromCache = searchResults.some(r => r.fromCache);
-      const allFromCache = searchResults.every(r => r.fromCache);
-
-      // Merge every result across however many calls just ran. The
-      // domain-dedup step right below already handles removing repeats,
-      // so merging first and deduping after is safe and simple.
-      let organic = searchResults.flatMap(r => r.data.results || []);
-
-      // Sum real credit cost across only the calls that weren't cached,
-      // since a cache hit always costs 0 regardless of what it reports.
-      const totalCredits = searchResults.reduce((sum, r) => {
-        if (r.fromCache) return sum;
-        const c = r.data.usage && typeof r.data.usage.credits === 'number' ? r.data.usage.credits : null;
-        return c === null ? sum : sum + c;
-      }, 0);
-      const anyCreditUnreported = searchResults.some(r => !r.fromCache && !(r.data.usage && typeof r.data.usage.credits === 'number'));
+      const { data, fromCache } = await runTavilySearch(query, includeDomains, apiKey);
+      let organic = data.results || [];
 
       // Tavily's include_domains matches at the domain level, which lets subdomains
       // through too (e.g. listing "mangadex.org" also allows "forum.mangadex.org").
@@ -892,8 +758,7 @@
       // Dedup by actual domain rather than the guessed display name, since
       // the same site can produce slightly different guessed names across
       // different pages (inconsistent title formatting). Domain is the more
-      // reliable signal for "is this really the same site." This also
-      // naturally removes any overlap between the two merged searches above.
+      // reliable signal for "is this really the same site."
       const seenDomains = new Set();
       const names = new Map();  // siteName -> domain (for chip fallback display)
       const rows = [];
@@ -930,30 +795,16 @@
       // Real credit cost from Tavily, when available. Per Tavily's own docs, this
       // can show 0 early in an account's life even when a credit was genuinely
       // spent. It's not a bug in this tool if that happens occasionally.
-      const creditCost = !anyCreditUnreported
-        ? `${totalCredits} credit${totalCredits === 1 ? '' : 's'} used`
+      const creditCost = data.usage && typeof data.usage.credits === 'number'
+        ? `${data.usage.credits} credit${data.usage.credits === 1 ? '' : 's'} used`
         : null;
 
-      const costLabel = allFromCache
+      const costLabel = fromCache
         ? 'from cache, 0 credits used'
-        : anyFromCache
-          ? `${creditCost || 'partial credit usage not reported'} (one part cached)`
-          : (creditCost || 'credit usage not reported');
-
-      const lookupTag = lookupStatus === 'no_match'
-        ? ' (no match on MangaUpdates, AniList, or MyAnimeList, searched as typed)'
-        : lookupStatus === 'error'
-          ? ` (alias lookup failed: ${lookupDetail || 'unknown reason'}, searched as typed)`
-          : '';
-      const mergedTag = secondQuery ? ` (also includes results for "${escapeHtml(query)}")` : '';
-      const aliasNote = usedOr
-        ? `<p class="summary">Searched as: ${group.map(escapeHtml).join(' OR ')}, ${costLabel}, ${names.size} unique sites</p>`
-        : wasCorrected
-          ? `<p class="summary">Searched as: ${escapeHtml(group[0])}${mergedTag}, ${costLabel}, ${names.size} unique sites</p>`
-          : `<p class="summary">${organic.length} results${escapeHtml(lookupTag)}, ${costLabel}, ${names.size} unique sites</p>`;
+        : (creditCost || 'credit usage not reported');
 
       results.innerHTML = `
-        ${aliasNote}
+        <p class="summary">${organic.length} results, ${costLabel}, ${names.size} unique sites</p>
         ${rows.join('')}
         <div class="chips">${chips}</div>
       `;
