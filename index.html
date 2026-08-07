@@ -168,6 +168,14 @@
   </div>
 
   <div class="toggle-row">
+    <span>Advanced search (deeper results, 2 credits instead of 1)</span>
+    <label class="switch">
+      <input type="checkbox" id="advancedSearchToggle">
+      <span class="slider"></span>
+    </label>
+  </div>
+
+  <div class="toggle-row">
     <span>Search Manhwa Sources</span>
     <label class="switch">
       <input type="checkbox" id="manhwaToggle">
@@ -238,6 +246,7 @@
   const includeInput = document.getElementById('includeDomains');
   const aniListAutoToggle = document.getElementById('aniListAutoToggle');
   const combineOrToggle = document.getElementById('combineOrToggle');
+  const advancedSearchToggle = document.getElementById('advancedSearchToggle');
   const manhwaToggle = document.getElementById('manhwaToggle');
   const goBtn = document.getElementById('go');
   const results = document.getElementById('results');
@@ -252,6 +261,8 @@
   aniListAutoToggle.addEventListener('change', () => localStorage.setItem('anilist_auto', aniListAutoToggle.checked));
   combineOrToggle.checked = localStorage.getItem('combine_or') !== 'false';  // on by default
   combineOrToggle.addEventListener('change', () => localStorage.setItem('combine_or', combineOrToggle.checked));
+  advancedSearchToggle.checked = localStorage.getItem('advanced_search') === 'true';  // off by default
+  advancedSearchToggle.addEventListener('change', () => localStorage.setItem('advanced_search', advancedSearchToggle.checked));
 
   // Primary source: MangaUpdates. Tried first, since it's a large, dedicated
   // manga/manhwa/manhua database (unlike AniList/MAL, which lean anime-first).
@@ -279,9 +290,10 @@
       const names = new Set();
       if (record.title && record.title.trim() && isLatinName(record.title.trim())) names.add(record.title.trim());
       if (full) {
-        // Live suggestions: everything, including native-script names, since
-        // seeing those is genuinely useful for exploration here.
-        (record.associated || []).forEach(a => { if (a.title && a.title.trim()) names.add(a.title.trim()); });
+        // Live suggestions: every associated title, but still Latin-script
+        // only. Native Korean/Japanese/Chinese script is filtered out here
+        // too now, not just at search time.
+        (record.associated || []).forEach(a => { if (a.title && a.title.trim() && isLatinName(a.title.trim())) names.add(a.title.trim()); });
       } else {
         // Search-time: only the first Latin-script associated name, not
         // just whatever happens to be first in MangaUpdates' unordered list.
@@ -332,12 +344,10 @@
       if (!media) return { names: [title], status: 'no_match' };
 
       // For search-time use (full=false), this stays tight: only the clean
-      // English and romaji titles. Native Japanese script and the full
-      // synonyms list get skipped there, since jamming every known alias
-      // into one OR query overloads the search and drags in generic
-      // catalog/search-listing pages instead of the actual title. For live
-      // suggestion display (full=true), everything AniList has gets shown,
-      // since exploration is the point there, not building a lean query.
+      // English and romaji titles. For live suggestion display (full=true),
+      // every other name AniList has gets shown too, EXCEPT native script
+      // (native title, and any synonym written in native script), which is
+      // filtered out here just like at search time now.
       const names = new Set();
       // Defensive Latin-script guard: AniList's english/romaji fields should
       // always already be Latin by design (native script lives in a
@@ -346,8 +356,8 @@
       if (media.title.english && media.title.english.trim() && isLatinName(media.title.english.trim())) names.add(media.title.english.trim());
       if (media.title.romaji && media.title.romaji.trim() && isLatinName(media.title.romaji.trim())) names.add(media.title.romaji.trim());
       if (full) {
-        if (media.title.native && media.title.native.trim()) names.add(media.title.native.trim());
-        (media.synonyms || []).forEach(s => { if (s && s.trim()) names.add(s.trim()); });
+        // media.title.native intentionally skipped: always native script.
+        (media.synonyms || []).forEach(s => { if (s && s.trim() && isLatinName(s.trim())) names.add(s.trim()); });
       }
       if (!names.size) names.add(title);
       return { names: [...names], status: 'matched' };
@@ -374,8 +384,8 @@
       if (entry.title_english && entry.title_english.trim() && isLatinName(entry.title_english.trim())) names.add(entry.title_english.trim());
       if (entry.title && entry.title.trim() && isLatinName(entry.title.trim())) names.add(entry.title.trim());
       if (full) {
-        if (entry.title_japanese && entry.title_japanese.trim()) names.add(entry.title_japanese.trim());
-        (entry.title_synonyms || []).forEach(s => { if (s && s.trim()) names.add(s.trim()); });
+        // entry.title_japanese intentionally skipped: always native script.
+        (entry.title_synonyms || []).forEach(s => { if (s && s.trim() && isLatinName(s.trim())) names.add(s.trim()); });
       }
       if (!names.size) names.add(title);
       return { names: [...names], status: 'matched' };
@@ -691,6 +701,53 @@
     return best;
   }
 
+  // Runs one Tavily search (checking cache first), returning its results
+  // and real credit cost. Extracted so runSearch can call this once for a
+  // normal search, or twice when a correction needs merging with the raw
+  // typed text (see the "queriesToRun" logic below).
+  async function runTavilySearch(queryText, includeDomains, apiKey) {
+    // Confirmed via Tavily's own docs: advanced depth is included on the
+    // free tier, not a paid-only feature. It just costs 2 credits instead
+    // of 1 per call, taken from the same monthly free pool.
+    const depth = advancedSearchToggle.checked ? 'advanced' : 'basic';
+
+    const cacheKey = 'tavily_cache:' + JSON.stringify({
+      q: queryText,
+      d: includeDomains ? [...includeDomains].sort() : null,
+      depth  // basic and advanced results for the same query are genuinely
+              // different data, so they need separate cache entries.
+    });
+
+    const cached = cacheGet(cacheKey);
+    if (cached) {
+      return { data: JSON.parse(cached), fromCache: true };
+    }
+
+    const body = {
+      api_key: apiKey,
+      query: queryText,
+      search_depth: depth,
+      max_results: 20,
+      include_usage: true      // ask Tavily to report real credit cost for this call
+    };
+    if (includeDomains) body.include_domains = includeDomains;
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
+    const resp = await fetch('https://api.tavily.com/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    if (!resp.ok) throw new Error(`API error (${resp.status})`);
+    const data = await resp.json();
+
+    cacheSet(cacheKey, JSON.stringify(data));
+    return { data, fromCache: false };
+  }
+
   async function runSearch(forceQuery, skipTypoCheck) {
     const query = (forceQuery || qInput.value).trim();
     const apiKey = keyInput.value.trim();
@@ -729,14 +786,12 @@
 
     let group = [query];
     let lookupStatus = null;  // null = toggle was off, didn't check at all
-    let lookupSource = null;  // which service actually matched, if any
     let lookupDetail = null;  // real failure reason, when status is 'error'
     if (aniListAutoToggle.checked) {
       results.innerHTML = '<p class="status">Checking for alternate titles…</p>';
       const lookup = await fetchAliasesWithFallback(query);
       group = lookup.names;
       lookupStatus = lookup.status;
-      lookupSource = lookup.source;
       lookupDetail = lookup.detail;
       // Only remember titles an external source actually confirmed. A raw,
       // unvalidated query (toggle off, or lookup failed/found nothing)
@@ -752,10 +807,33 @@
     // this is optional: the "Combine alt names with OR" toggle lets it be skipped
     // in favor of just using the single best-resolved name instead.
     const usedOr = combineOrToggle.checked && group.length > 1;
-    const combinedQuery = usedOr
-      ? group.map(n => `"${n}"`).join(' OR ')
-      : group[0];  // use whatever was resolved. Even a single corrected
-                    // name should replace a misspelled raw query, not fall back to it
+    const wasCorrected = !usedOr && group[0].toLowerCase() !== query.toLowerCase();
+
+    // Toggling auto-detect on vs. off sends genuinely different text to
+    // Tavily, and since Tavily ranks results semantically (not by exact
+    // keyword match), two different phrasings of "the same" title can
+    // surface different sites, even though they're the same manga to you.
+    // To close that gap: whenever a real correction happened, the raw
+    // typed text gets merged in too, not discarded, so you get the union
+    // of what both phrasings find rather than only whichever one "won."
+    let combinedQuery;
+    let secondQuery = null;  // set only when a second, separate Tavily call is needed
+    if (usedOr) {
+      // Cheap case: folding the raw query into the same OR string costs
+      // nothing extra, since it's still one Tavily call either way.
+      const orNames = group.some(n => n.toLowerCase() === query.toLowerCase())
+        ? group
+        : [...group, query];
+      combinedQuery = orNames.map(n => `"${n}"`).join(' OR ');
+    } else if (wasCorrected) {
+      // OR is off, so merging means two separate calls: the resolved name
+      // and the raw text, results combined client-side after both return.
+      combinedQuery = group[0];
+      secondQuery = query;
+    } else {
+      combinedQuery = group[0];  // use whatever was resolved. Even a single corrected
+                                   // name should replace a misspelled raw query, not fall back to it
+    }
 
     try {
       const includeDomains = manhwaToggle.checked
@@ -764,51 +842,35 @@
             ? includeInput.value.split(',').map(d => d.trim()).filter(Boolean)
             : undefined);
 
-      // Cache key covers the actual query sent plus the domain filter in effect.
-      // same search under a different filter is a genuinely different request.
-      const cacheKey = 'tavily_cache:' + JSON.stringify({
-        q: combinedQuery,
-        d: includeDomains ? [...includeDomains].sort() : null
-      });
-
-      let data;
-      let fromCache = false;
-      const cached = cacheGet(cacheKey);
-      if (cached) {
-        data = JSON.parse(cached);
-        fromCache = true;
-        results.innerHTML = '<p class="status">Loading cached result…</p>';
-      } else {
-        results.innerHTML = usedOr
+      results.innerHTML = secondQuery
+        ? '<p class="status">Searching corrected and original title…</p>'
+        : usedOr
           ? `<p class="status">Searching combined aliases…</p>`
           : '<p class="status">Searching…</p>';
 
-        const body = {
-          api_key: apiKey,
-          query: combinedQuery,
-          search_depth: 'basic',   // cheapest: 1 credit per call, even with a combined OR query
-          max_results: 20,
-          include_usage: true      // ask Tavily to report real credit cost for this call
-        };
-        if (includeDomains) body.include_domains = includeDomains;
+      // Run the primary query, and the raw typed text too when a real
+      // correction needs merging in (see the secondQuery logic above).
+      const searchTargets = secondQuery ? [combinedQuery, secondQuery] : [combinedQuery];
+      const searchResults = await Promise.all(
+        searchTargets.map(q => runTavilySearch(q, includeDomains, apiKey))
+      );
 
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 20000);
-        const resp = await fetch('https://api.tavily.com/search', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-          signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-        if (!resp.ok) throw new Error(`API error (${resp.status})`);
-        data = await resp.json();
+      const anyFromCache = searchResults.some(r => r.fromCache);
+      const allFromCache = searchResults.every(r => r.fromCache);
 
-        // Cache the raw response so an identical future search costs 0 credits.
-        cacheSet(cacheKey, JSON.stringify(data));
-      }
+      // Merge every result across however many calls just ran. The
+      // domain-dedup step right below already handles removing repeats,
+      // so merging first and deduping after is safe and simple.
+      let organic = searchResults.flatMap(r => r.data.results || []);
 
-      let organic = data.results || [];
+      // Sum real credit cost across only the calls that weren't cached,
+      // since a cache hit always costs 0 regardless of what it reports.
+      const totalCredits = searchResults.reduce((sum, r) => {
+        if (r.fromCache) return sum;
+        const c = r.data.usage && typeof r.data.usage.credits === 'number' ? r.data.usage.credits : null;
+        return c === null ? sum : sum + c;
+      }, 0);
+      const anyCreditUnreported = searchResults.some(r => !r.fromCache && !(r.data.usage && typeof r.data.usage.credits === 'number'));
 
       // Tavily's include_domains matches at the domain level, which lets subdomains
       // through too (e.g. listing "mangadex.org" also allows "forum.mangadex.org").
@@ -830,7 +892,8 @@
       // Dedup by actual domain rather than the guessed display name, since
       // the same site can produce slightly different guessed names across
       // different pages (inconsistent title formatting). Domain is the more
-      // reliable signal for "is this really the same site."
+      // reliable signal for "is this really the same site." This also
+      // naturally removes any overlap between the two merged searches above.
       const seenDomains = new Set();
       const names = new Map();  // siteName -> domain (for chip fallback display)
       const rows = [];
@@ -867,24 +930,26 @@
       // Real credit cost from Tavily, when available. Per Tavily's own docs, this
       // can show 0 early in an account's life even when a credit was genuinely
       // spent. It's not a bug in this tool if that happens occasionally.
-      const creditCost = data.usage && typeof data.usage.credits === 'number'
-        ? `${data.usage.credits} credit${data.usage.credits === 1 ? '' : 's'} used`
+      const creditCost = !anyCreditUnreported
+        ? `${totalCredits} credit${totalCredits === 1 ? '' : 's'} used`
         : null;
 
-      const costLabel = fromCache
+      const costLabel = allFromCache
         ? 'from cache, 0 credits used'
-        : (creditCost || 'credit usage not reported');
+        : anyFromCache
+          ? `${creditCost || 'partial credit usage not reported'} (one part cached)`
+          : (creditCost || 'credit usage not reported');
 
-      const wasCorrected = !usedOr && group[0].toLowerCase() !== query.toLowerCase();
       const lookupTag = lookupStatus === 'no_match'
         ? ' (no match on MangaUpdates, AniList, or MyAnimeList, searched as typed)'
         : lookupStatus === 'error'
           ? ` (alias lookup failed: ${lookupDetail || 'unknown reason'}, searched as typed)`
           : '';
+      const mergedTag = secondQuery ? ` (also includes results for "${escapeHtml(query)}")` : '';
       const aliasNote = usedOr
         ? `<p class="summary">Searched as: ${group.map(escapeHtml).join(' OR ')}, ${costLabel}, ${names.size} unique sites</p>`
         : wasCorrected
-          ? `<p class="summary">Searched as: ${escapeHtml(group[0])} (auto-corrected via ${escapeHtml(lookupSource || 'alias lookup')}), ${costLabel}, ${names.size} unique sites</p>`
+          ? `<p class="summary">Searched as: ${escapeHtml(group[0])}${mergedTag}, ${costLabel}, ${names.size} unique sites</p>`
           : `<p class="summary">${organic.length} results${escapeHtml(lookupTag)}, ${costLabel}, ${names.size} unique sites</p>`;
 
       results.innerHTML = `
