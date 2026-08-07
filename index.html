@@ -28,6 +28,8 @@
   }
   .alt-name-chip:active{opacity:0.8;}
   .alt-name-chip .src{color:var(--paper-dim);font-size:10.5px;}
+  .alt-name-chip.exact{border-color:var(--accent);color:var(--paper);}
+  .alt-name-chip.more{background:none;border-style:dashed;color:var(--paper-dim);}
   .row{display:flex;gap:8px;}
   input[type=text]{
     flex:1;padding:14px 16px;background:var(--panel);border:2px solid var(--border);
@@ -158,6 +160,14 @@
   </div>
 
   <div class="toggle-row">
+    <span>Combine alt names with OR (off: use just one title)</span>
+    <label class="switch">
+      <input type="checkbox" id="combineOrToggle">
+      <span class="slider"></span>
+    </label>
+  </div>
+
+  <div class="toggle-row">
     <span>Search Manhwa Sources</span>
     <label class="switch">
       <input type="checkbox" id="manhwaToggle">
@@ -208,6 +218,7 @@
   const keyInput = document.getElementById('apiKey');
   const includeInput = document.getElementById('includeDomains');
   const aniListAutoToggle = document.getElementById('aniListAutoToggle');
+  const combineOrToggle = document.getElementById('combineOrToggle');
   const manhwaToggle = document.getElementById('manhwaToggle');
   const goBtn = document.getElementById('go');
   const results = document.getElementById('results');
@@ -220,6 +231,8 @@
   includeInput.addEventListener('change', () => localStorage.setItem('tavily_include_domains', includeInput.value.trim()));
   aniListAutoToggle.checked = localStorage.getItem('anilist_auto') !== 'false';  // on by default
   aniListAutoToggle.addEventListener('change', () => localStorage.setItem('anilist_auto', aniListAutoToggle.checked));
+  combineOrToggle.checked = localStorage.getItem('combine_or') !== 'false';  // on by default
+  combineOrToggle.addEventListener('change', () => localStorage.setItem('combine_or', combineOrToggle.checked));
 
   // Primary source: MangaUpdates. Tried first, since it's a large, dedicated
   // manga/manhwa/manhua database (unlike AniList/MAL, which lean anime-first).
@@ -227,7 +240,7 @@
   // its CORS support and exact response shape weren't independently verified
   // before wiring this in, so treat this as a real-world test. If it fails
   // consistently, the chain still falls through to AniList and Jikan below.
-  async function fetchMangaUpdatesAliases(title, signal) {
+  async function fetchMangaUpdatesAliases(title, signal, full) {
     try {
       const resp = await fetch('https://api.mangaupdates.com/v1/series/search', {
         method: 'POST',
@@ -245,9 +258,14 @@
       if (!record) return { names: [title], status: 'no_match' };
 
       const names = new Set();
-      if (record.title) names.add(record.title.trim());
-      const firstAssociated = (record.associated || [])[0];
-      if (firstAssociated && firstAssociated.title) names.add(firstAssociated.title.trim());
+      if (record.title && record.title.trim()) names.add(record.title.trim());
+      if (full) {
+        // Every associated title MangaUpdates has on file, not just the first.
+        (record.associated || []).forEach(a => { if (a.title && a.title.trim()) names.add(a.title.trim()); });
+      } else {
+        const firstAssociated = (record.associated || [])[0];
+        if (firstAssociated && firstAssociated.title && firstAssociated.title.trim()) names.add(firstAssociated.title.trim());
+      }
       if (!names.size) names.add(title);
       return { names: [...names], status: 'matched' };
     } catch {
@@ -263,7 +281,7 @@
   //     carries the actual HTTP status or error message, so a rate limit
   //     (429) can be told apart from an outage or a plain network failure
   //     instead of showing one generic "failed" message.
-  async function fetchAniListAliases(title, signal) {
+  async function fetchAniListAliases(title, signal, full) {
     try {
       const query = `
         query ($search: String) {
@@ -286,13 +304,20 @@
       const media = data.data && data.data.Media;
       if (!media) return { names: [title], status: 'no_match' };
 
-      // Keep this tight. Only the clean English and romaji titles. Native
-      // Japanese script and the full synonyms list get skipped: jamming every
-      // known alias into one OR query overloads the search and drags in
-      // generic catalog/search-listing pages instead of the actual title.
+      // For search-time use (full=false), this stays tight: only the clean
+      // English and romaji titles. Native Japanese script and the full
+      // synonyms list get skipped there, since jamming every known alias
+      // into one OR query overloads the search and drags in generic
+      // catalog/search-listing pages instead of the actual title. For live
+      // suggestion display (full=true), everything AniList has gets shown,
+      // since exploration is the point there, not building a lean query.
       const names = new Set();
-      if (media.title.english) names.add(media.title.english.trim());
-      if (media.title.romaji) names.add(media.title.romaji.trim());
+      if (media.title.english && media.title.english.trim()) names.add(media.title.english.trim());
+      if (media.title.romaji && media.title.romaji.trim()) names.add(media.title.romaji.trim());
+      if (full) {
+        if (media.title.native && media.title.native.trim()) names.add(media.title.native.trim());
+        (media.synonyms || []).forEach(s => { if (s && s.trim()) names.add(s.trim()); });
+      }
       if (!names.size) names.add(title);
       return { names: [...names], status: 'matched' };
     } catch {
@@ -302,7 +327,7 @@
 
   // Fallback source: Jikan, an unofficial MyAnimeList API. Same shape and
   // same tight-alias logic as the AniList function above.
-  async function fetchJikanAliases(title, signal) {
+  async function fetchJikanAliases(title, signal, full) {
     try {
       const resp = await fetch(`https://api.jikan.moe/v4/manga?q=${encodeURIComponent(title)}&limit=1`, { signal });
       if (!resp.ok) {
@@ -314,8 +339,12 @@
       if (!entry) return { names: [title], status: 'no_match' };
 
       const names = new Set();
-      if (entry.title_english) names.add(entry.title_english.trim());
-      if (entry.title) names.add(entry.title.trim());
+      if (entry.title_english && entry.title_english.trim()) names.add(entry.title_english.trim());
+      if (entry.title && entry.title.trim()) names.add(entry.title.trim());
+      if (full) {
+        if (entry.title_japanese && entry.title_japanese.trim()) names.add(entry.title_japanese.trim());
+        (entry.title_synonyms || []).forEach(s => { if (s && s.trim()) names.add(s.trim()); });
+      }
       if (!names.size) names.add(title);
       return { names: [...names], status: 'matched' };
     } catch {
@@ -367,25 +396,54 @@
   //    complete, useful title fragment yet.
   let altNamesController = null;
 
-  function renderAltNameChips(suggestions) {
-    if (!suggestions.length) {
+  // Note: the full set of names from the most recent lookup is passed
+  // directly into each click handler's closure (the `pool` parameter
+  // below), not stored separately, so clicking between alternatives can
+  // just re-tag and re-render that same set instead of re-querying all
+  // three APIs again. Every name in one lookup's response already refers
+  // to the same title, so there's nothing new to learn from a fresh fetch
+  // when you're just picking among names you've already been shown.
+
+  const ALT_NAMES_COLLAPSE_AT = 5;  // show at most this many chips before offering "Show N more"
+
+  function renderAltNameChips(pool, activeName, expanded) {
+    if (!pool.length) {
       altNames.hidden = true;
       altNames.innerHTML = '';
       return;
     }
+    const activeLower = (activeName || '').toLowerCase();
+    const shouldCollapse = pool.length > ALT_NAMES_COLLAPSE_AT && !expanded;
+    const visible = shouldCollapse ? pool.slice(0, ALT_NAMES_COLLAPSE_AT) : pool;
+    const hiddenCount = pool.length - visible.length;
+
     altNames.hidden = false;
     altNames.innerHTML = `
       <span class="alt-names-label">Alternative names:</span>
-      ${suggestions.map(s => `<button type="button" class="alt-name-chip">${escapeHtml(s.name)} <span class="src">(${escapeHtml(s.source)})</span></button>`).join('')}
+      ${visible.map(s => {
+        const isExact = s.name.toLowerCase() === activeLower;
+        return `<button type="button" class="alt-name-chip${isExact ? ' exact' : ''}">${escapeHtml(s.name)} <span class="src">(${isExact ? 'exact match' : escapeHtml(s.source)})</span></button>`;
+      }).join('')}
+      ${hiddenCount > 0 ? `<button type="button" class="alt-name-chip more">Show ${hiddenCount} more</button>` : ''}
     `;
-    altNames.querySelectorAll('.alt-name-chip').forEach((btn, i) => {
+    altNames.querySelectorAll('.alt-name-chip:not(.more)').forEach((btn, i) => {
       btn.addEventListener('click', () => {
-        qInput.value = suggestions[i].name;
-        altNames.hidden = true;
-        altNames.innerHTML = '';
+        const chosen = visible[i].name;
+        qInput.value = chosen;
         qInput.focus();
+        // Re-render the SAME already-fetched pool, just re-tagging which
+        // entry now counts as the exact match. Zero network calls: every
+        // name here came from one lookup that already knows they're all
+        // the same title, so there's nothing left to look up again.
+        clearTimeout(altNamesDebounceTimer);
+        if (altNamesController) altNamesController.abort();
+        renderAltNameChips(pool, chosen, expanded);
       });
     });
+    const moreBtn = altNames.querySelector('.alt-name-chip.more');
+    if (moreBtn) {
+      moreBtn.addEventListener('click', () => renderAltNameChips(pool, activeName, true));
+    }
   }
 
   async function updateAltNameSuggestions(query) {
@@ -401,29 +459,39 @@
     const cacheKey = 'alt_names_cache:' + query.toLowerCase();
     const cached = cacheGet(cacheKey);
     if (cached) {
-      try { renderAltNameChips(JSON.parse(cached)); return; } catch { /* fall through to a fresh fetch */ }
+      try { renderAltNameChips(JSON.parse(cached), query); return; } catch { /* fall through to a fresh fetch */ }
     }
 
     const controller = new AbortController();
     altNamesController = controller;
 
+    // Show a quiet loading state during the lookup. Cache hits above skip
+    // this entirely since they resolve instantly with no visible wait.
+    altNames.hidden = false;
+    altNames.innerHTML = '<span class="alt-names-label">Looking up alternatives…</span>';
+
     const [mu, al, jk] = await Promise.all([
-      fetchMangaUpdatesAliases(query, controller.signal),
-      fetchAniListAliases(query, controller.signal),
-      fetchJikanAliases(query, controller.signal)
+      fetchMangaUpdatesAliases(query, controller.signal, true),
+      fetchAniListAliases(query, controller.signal, true),
+      fetchJikanAliases(query, controller.signal, true)
     ]);
 
     // This exact request was cancelled by a newer keystroke while it was
     // in flight. Drop it rather than overwriting a more current list.
     if (controller.signal.aborted) return;
 
-    const seen = new Set([query.toLowerCase()]);
+    // Every name from every matching source gets shown, including one that
+    // happens to exactly match what's currently typed. Previously the exact
+    // name was filtered out here, which meant the moment your typing landed
+    // on the correct official title, that entry would vanish from the list
+    // instead of staying visible alongside the alternates.
+    const seen = new Set();
     const suggestions = [];
     for (const [result, source] of [[mu, 'MangaUpdates'], [al, 'AniList'], [jk, 'MyAnimeList']]) {
       if (result.status !== 'matched') continue;
       for (const name of result.names) {
         const lower = name.toLowerCase();
-        if (seen.has(lower)) continue;
+        if (seen.has(lower)) continue;  // dedupe across sources only
         seen.add(lower);
         suggestions.push({ name, source });
       }
@@ -435,7 +503,7 @@
     // permanently, since a retry once things recover should get a real one.
     const allFailed = [mu, al, jk].every(r => r.status === 'error');
     if (!allFailed) cacheSet(cacheKey, JSON.stringify(suggestions));
-    renderAltNameChips(suggestions);
+    renderAltNameChips(suggestions, query);
   }
 
   let altNamesDebounceTimer;
@@ -647,13 +715,14 @@
 
     // Combine alias group into ONE query using OR, instead of one Tavily call per alias.
     // Note: Tavily is a neural/semantic search engine, not a classic keyword engine.
-    // "OR" isn't a documented, guaranteed operator here. It tends to work well in practice
-    // (semantic search naturally treats it as "match either phrase"), but if you notice an
-    // alias group's results only reflect one of the names, the fallback is splitting it back
-    // into separate searches per name.
-    const combinedQuery = group.length > 1
+    // "OR" isn't a documented, guaranteed operator here. It occasionally drags in
+    // generic/irrelevant results when several names get jammed into one query, so
+    // this is optional: the "Combine alt names with OR" toggle lets it be skipped
+    // in favor of just using the single best-resolved name instead.
+    const usedOr = combineOrToggle.checked && group.length > 1;
+    const combinedQuery = usedOr
       ? group.map(n => `"${n}"`).join(' OR ')
-      : group[0];  // use whatever AniList resolved to. Even a single corrected
+      : group[0];  // use whatever was resolved. Even a single corrected
                     // name should replace a misspelled raw query, not fall back to it
 
     try {
@@ -678,7 +747,7 @@
         fromCache = true;
         results.innerHTML = '<p class="status">Loading cached result…</p>';
       } else {
-        results.innerHTML = group.length > 1
+        results.innerHTML = usedOr
           ? `<p class="status">Searching combined aliases…</p>`
           : '<p class="status">Searching…</p>';
 
@@ -774,13 +843,13 @@
         ? 'from cache, 0 credits used'
         : (creditCost || 'credit usage not reported');
 
-      const wasCorrected = group.length === 1 && group[0].toLowerCase() !== query.toLowerCase();
+      const wasCorrected = !usedOr && group[0].toLowerCase() !== query.toLowerCase();
       const lookupTag = lookupStatus === 'no_match'
         ? ' (no match on MangaUpdates, AniList, or MyAnimeList, searched as typed)'
         : lookupStatus === 'error'
           ? ` (alias lookup failed: ${lookupDetail || 'unknown reason'}, searched as typed)`
           : '';
-      const aliasNote = group.length > 1
+      const aliasNote = usedOr
         ? `<p class="summary">Searched as: ${group.map(escapeHtml).join(' OR ')}, ${costLabel}, ${names.size} unique sites</p>`
         : wasCorrected
           ? `<p class="summary">Searched as: ${escapeHtml(group[0])} (auto-corrected via ${escapeHtml(lookupSource || 'alias lookup')}), ${costLabel}, ${names.size} unique sites</p>`
